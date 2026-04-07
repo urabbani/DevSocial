@@ -171,6 +171,64 @@ func TestRevisionAwareQuoteReplyAndRepost(t *testing.T) {
 	}
 }
 
+func TestGetFollowingTimelinePosts(t *testing.T) {
+	app := newTestApp(t)
+
+	me, err := app.UpsertUser(1, "me", "Me", "https://example.com/me.png")
+	if err != nil {
+		t.Fatalf("UpsertUser(me): %v", err)
+	}
+	followed, err := app.UpsertUser(2, "followed", "Followed", "https://example.com/followed.png")
+	if err != nil {
+		t.Fatalf("UpsertUser(followed): %v", err)
+	}
+	other, err := app.UpsertUser(3, "other", "Other", "https://example.com/other.png")
+	if err != nil {
+		t.Fatalf("UpsertUser(other): %v", err)
+	}
+
+	myPostID, err := app.CreatePost(me.ID, "my root", markdownHTML(t, "my root"), nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("CreatePost(my root): %v", err)
+	}
+	followedPostID, err := app.CreatePost(followed.ID, "followed root", markdownHTML(t, "followed root"), nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("CreatePost(followed root): %v", err)
+	}
+	if _, err := app.CreatePost(other.ID, "other root", markdownHTML(t, "other root"), nil, nil, nil, nil); err != nil {
+		t.Fatalf("CreatePost(other root): %v", err)
+	}
+	if _, err := app.CreatePost(followed.ID, "followed reply", markdownHTML(t, "followed reply"), &myPostID, nil, nil, nil); err != nil {
+		t.Fatalf("CreatePost(followed reply): %v", err)
+	}
+
+	if _, err := app.ToggleFollow(me.ID, followed.ID); err != nil {
+		t.Fatalf("ToggleFollow: %v", err)
+	}
+
+	posts, err := app.GetFollowingTimelinePosts(me.ID, 10, 0)
+	if err != nil {
+		t.Fatalf("GetFollowingTimelinePosts: %v", err)
+	}
+	if len(posts) != 2 {
+		t.Fatalf("len(posts) = %d, want 2", len(posts))
+	}
+
+	got := map[int64]bool{}
+	for _, post := range posts {
+		got[post.ID] = true
+		if post.ParentPostID != nil {
+			t.Fatalf("following timeline included child post %d", post.ID)
+		}
+	}
+	if !got[myPostID] {
+		t.Fatalf("following timeline missing own post %d", myPostID)
+	}
+	if !got[followedPostID] {
+		t.Fatalf("following timeline missing followed post %d", followedPostID)
+	}
+}
+
 func TestLoadTemplates(t *testing.T) {
 	LoadTemplates()
 }

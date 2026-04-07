@@ -221,6 +221,11 @@ body.docs-view main.container {
     margin-bottom: 12px;
     box-shadow: var(--shadow-sm);
 }
+.timeline-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+}
 .post-card-full { margin-bottom: 24px; }
 .post-header {
     display: flex;

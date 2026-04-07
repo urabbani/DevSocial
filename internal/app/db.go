@@ -506,6 +506,52 @@ func (app *App) GetTimelinePosts(limit int, beforeID int64) ([]*Post, error) {
 	return app.scanPosts(rows)
 }
 
+func (app *App) GetFollowingTimelinePosts(userID int64, limit int, beforeID int64) ([]*Post, error) {
+	var rows *sql.Rows
+	var err error
+
+	if beforeID > 0 {
+		rows, err = app.DB.Query(`
+			SELECT id, author_id, content, content_html, parent_post_id, parent_post_revision_id,
+				   quote_of_id, quote_of_revision_id,
+				   created_at, edited_at, like_count, repost_count, comment_count,
+				   current_revision_id, revision_count
+			FROM posts
+			WHERE parent_post_id IS NULL
+			  AND id < ?
+			  AND (
+				author_id = ?
+				OR author_id IN (
+					SELECT following_id FROM follows WHERE follower_id = ?
+				)
+			  )
+			ORDER BY created_at DESC, id DESC LIMIT ?
+		`, beforeID, userID, userID, limit)
+	} else {
+		rows, err = app.DB.Query(`
+			SELECT id, author_id, content, content_html, parent_post_id, parent_post_revision_id,
+				   quote_of_id, quote_of_revision_id,
+				   created_at, edited_at, like_count, repost_count, comment_count,
+				   current_revision_id, revision_count
+			FROM posts
+			WHERE parent_post_id IS NULL
+			  AND (
+				author_id = ?
+				OR author_id IN (
+					SELECT following_id FROM follows WHERE follower_id = ?
+				)
+			  )
+			ORDER BY created_at DESC, id DESC LIMIT ?
+		`, userID, userID, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return app.scanPosts(rows)
+}
+
 func (app *App) GetPosts(query PostQuery) ([]*Post, error) {
 	limit := query.Limit
 	if limit <= 0 {

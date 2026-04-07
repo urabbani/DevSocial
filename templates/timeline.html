@@ -1,5 +1,13 @@
 {{define "content"}}
 <div class="timeline">
+    <div class="timeline-tabs">
+        <a href="/?tab=latest" class="btn {{if eq .ActiveTab "latest"}}btn-secondary{{else}}btn-link{{end}} btn-sm">Latest</a>
+        {{if .CurrentUser}}
+        <a href="/?tab=following" class="btn {{if eq .ActiveTab "following"}}btn-secondary{{else}}btn-link{{end}} btn-sm">Following</a>
+        {{else}}
+        <a href="/login" class="btn btn-link btn-sm">Following</a>
+        {{end}}
+    </div>
     <div id="post-list">
     {{if .Posts}}
         {{range .Posts}}
@@ -101,8 +109,13 @@
         {{end}}
     {{else}}
         <div class="empty-state">
-            <h2>No posts yet</h2>
-            <p>Be the first to share something.</p>
+            {{if and $.CurrentUser (eq .ActiveTab "following")}}
+                <h2>No posts from people you follow</h2>
+                <p>Follow a few builders to fill this feed, or switch back to Latest.</p>
+            {{else}}
+                <h2>No posts yet</h2>
+                <p>Be the first to share something.</p>
+            {{end}}
             {{if $.CurrentUser}}
                 <a href="/compose" class="btn btn-primary">Write a Post</a>
             {{else}}

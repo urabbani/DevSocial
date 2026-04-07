@@ -41,12 +41,26 @@ func (app *App) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user := GetCurrentUser(r)
+	activeTab := r.URL.Query().Get("tab")
+	if activeTab != "following" {
+		activeTab = "latest"
+	}
+	if user == nil && activeTab == "following" {
+		activeTab = "latest"
+	}
+
 	beforeID := int64(0)
 	if v := r.URL.Query().Get("before"); v != "" {
 		beforeID, _ = strconv.ParseInt(v, 10, 64)
 	}
 
-	posts, err := app.GetTimelinePosts(postsPerPage+1, beforeID)
+	var posts []*Post
+	var err error
+	if activeTab == "following" {
+		posts, err = app.GetFollowingTimelinePosts(user.ID, postsPerPage+1, beforeID)
+	} else {
+		posts, err = app.GetTimelinePosts(postsPerPage+1, beforeID)
+	}
 	if err != nil {
 		app.renderStatus(w, r, http.StatusInternalServerError, "Timeline Error", "Failed to load timeline.")
 		return
@@ -68,10 +82,15 @@ func (app *App) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		Title:       "KarpathyTalk",
 		Posts:       posts,
 		HasMore:     hasMore,
+		ActiveTab:   activeTab,
 	}
 	if hasMore && len(posts) > 0 {
 		data.NextCursor = posts[len(posts)-1].ID
-		data.LoadMoreURL = fmt.Sprintf("/?before=%d", data.NextCursor)
+		if activeTab == "following" {
+			data.LoadMoreURL = fmt.Sprintf("/?tab=following&before=%d", data.NextCursor)
+		} else {
+			data.LoadMoreURL = fmt.Sprintf("/?before=%d", data.NextCursor)
+		}
 	}
 
 	if r.Header.Get("HX-Request") == "true" && beforeID > 0 {

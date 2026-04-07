@@ -5,4 +5,5 @@ karpathytalk.db-shm
 uploads/*
 !uploads/.keep
 .env
+.env.local
 .env.production
