@@ -1,0 +1,115 @@
+{{define "content"}}
+<div class="timeline">
+    <div id="post-list">
+    {{if .Posts}}
+        {{range .Posts}}
+        <article class="post-card" id="post-{{.ID}}">
+            <div class="post-header">
+                <a href="/user/{{.Author.Username}}" class="post-author">
+                    <img src="{{.Author.AvatarURL}}" alt="" class="avatar">
+                    <div>
+                        <strong class="display-name">{{.Author.DisplayName}}</strong>
+                        <span class="username">@{{.Author.Username}}</span>
+                    </div>
+                </a>
+                <div class="post-meta">
+                    <a href="/posts/{{.ID}}" class="post-time">{{timeago .CreatedAt}}</a>
+                    {{if gt .RevisionCount 1}}
+                    <a href="/posts/{{.ID}}/revisions" class="revision-link">Edited</a>
+                    {{end}}
+                </div>
+            </div>
+
+            <div class="post-body markdown-body{{if shouldtruncate .Content}} post-body-preview{{end}}">
+                {{raw .ContentHTML}}
+            </div>
+            <template id="copy-post-{{.ID}}-{{.RevisionNumber}}">{{.Content}}</template>
+            {{if shouldtruncate .Content}}
+            <button type="button" class="continue-link" data-expand-label="Continue reading" data-collapse-label="Show less">Continue reading</button>
+            {{end}}
+
+            {{if .QuotedPost}}
+            <div class="quoted-post">
+                <div class="post-header">
+                    <a href="/user/{{.QuotedPost.Author.Username}}" class="post-author">
+                        <img src="{{.QuotedPost.Author.AvatarURL}}" alt="" class="avatar-sm">
+                        <strong>{{.QuotedPost.Author.DisplayName}}</strong>
+                        <span class="username">@{{.QuotedPost.Author.Username}}</span>
+                    </a>
+                </div>
+                <div class="post-body markdown-body">
+                    {{raw .QuotedPost.ContentHTML}}
+                </div>
+                <div class="revision-meta">
+                    Quoted revision {{.QuotedPost.RevisionNumber}}
+                    {{if gt .QuotedPost.RevisionCount .QuotedPost.RevisionNumber}}
+                    <span class="stale-indicator">Current revision is {{.QuotedPost.RevisionCount}}</span>
+                    {{end}}
+                </div>
+            </div>
+            {{end}}
+
+            <div class="post-actions">
+                <a href="/posts/{{.ID}}" class="action-btn comment-btn" title="Reply">
+                    <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> <span class="count">{{.ReplyCount}}</span>
+                </a>
+
+                {{if $.CurrentUser}}
+                <button class="action-btn repost-btn{{if .IsReposted}} active{{end}}"
+                        hx-post="/posts/{{.ID}}/repost" hx-vals='{"revision_id":"{{.RevisionID}}"}' hx-swap="outerHTML" title="Repost">
+                    <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg> <span class="count">{{.RepostCount}}</span>
+                </button>
+
+                <button class="action-btn like-btn{{if .IsLiked}} active{{end}}"
+                        hx-post="/posts/{{.ID}}/like" hx-swap="outerHTML" title="Like">
+                    <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg> <span class="count">{{.LikeCount}}</span>
+                </button>
+
+                <a href="/compose?quote={{.ID}}" class="action-btn quote-btn" title="Quote Post">
+                    <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 8h2v3H8z M13 8h2v3h-2z"/></svg>
+                </a>
+                <button class="action-btn bookmark-btn{{if .IsBookmarked}} active{{end}}" hx-post="/posts/{{.ID}}/bookmark" hx-swap="outerHTML" title="Bookmark">
+                    <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+                </button>
+                <button class="action-btn copy-btn" title="Copy Markdown" data-copy-source="copy-post-{{.ID}}-{{.RevisionNumber}}" data-copy-post-id="{{.ID}}" data-copy-revision="{{.RevisionNumber}}">
+                    <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                </button>
+                {{else}}
+                <span class="action-btn repost-btn" title="Repost">
+                    <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg> <span class="count">{{.RepostCount}}</span>
+                </span>
+                <span class="action-btn like-btn" title="Like">
+                    <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg> <span class="count">{{.LikeCount}}</span>
+                </span>
+                <button class="action-btn copy-btn" title="Copy Markdown" data-copy-source="copy-post-{{.ID}}-{{.RevisionNumber}}" data-copy-post-id="{{.ID}}" data-copy-revision="{{.RevisionNumber}}">
+                    <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                </button>
+                {{end}}
+            </div>
+        </article>
+        {{end}}
+
+        {{if .HasMore}}
+        <div class="load-more" id="load-more">
+            <button class="btn btn-secondary"
+                    hx-get="{{.LoadMoreURL}}"
+                    hx-target="#load-more"
+                    hx-swap="outerHTML">
+                Load More
+            </button>
+        </div>
+        {{end}}
+    {{else}}
+        <div class="empty-state">
+            <h2>No posts yet</h2>
+            <p>Be the first to share something.</p>
+            {{if $.CurrentUser}}
+                <a href="/compose" class="btn btn-primary">Write a Post</a>
+            {{else}}
+                <a href="/login" class="btn btn-primary">Sign In to Post</a>
+            {{end}}
+        </div>
+    {{end}}
+    </div>
+</div>
+{{end}}

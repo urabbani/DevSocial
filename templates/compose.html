@@ -1,0 +1,82 @@
+{{define "content"}}
+<div class="compose-page">
+    <h2>{{if .IsEditing}}Edit Post{{else if .ParentPost}}Reply{{else if .QuotePost}}Quote Post{{else}}New Post{{end}}</h2>
+
+    {{if .Error}}
+    <div class="alert alert-error">{{.Error}}</div>
+    {{end}}
+
+    {{if .IsEditing}}
+    <p class="compose-note">Saving creates a new revision. The post URL stays the same and older revisions remain viewable.</p>
+    {{end}}
+
+    {{if .ParentPost}}
+    <div class="quoted-post">
+        <div class="post-header">
+            <a href="/user/{{.ParentPost.Author.Username}}" class="post-author">
+                <img src="{{.ParentPost.Author.AvatarURL}}" alt="" class="avatar-sm">
+                <strong>{{.ParentPost.Author.DisplayName}}</strong>
+                <span class="username">@{{.ParentPost.Author.Username}}</span>
+            </a>
+        </div>
+        <div class="post-body markdown-body">
+            {{raw .ParentPost.ContentHTML}}
+        </div>
+        <div class="revision-meta">
+            Replying to revision {{.ParentPost.RevisionNumber}}
+        </div>
+    </div>
+    {{end}}
+
+    <form method="POST" action="{{.FormAction}}" class="compose-form">
+        {{if .ParentPost}}
+        <input type="hidden" name="parent_post_id" value="{{.ParentPost.ID}}">
+        <input type="hidden" name="parent_post_revision_id" value="{{.ParentPost.RevisionID}}">
+        {{end}}
+        {{if .QuotePost}}
+        <input type="hidden" name="quote_of_id" value="{{.QuotePost.ID}}">
+        <input type="hidden" name="quote_of_revision_id" value="{{.QuotePost.RevisionID}}">
+
+        <div class="quoted-post">
+            <div class="post-header">
+                <a href="/user/{{.QuotePost.Author.Username}}" class="post-author">
+                    <img src="{{.QuotePost.Author.AvatarURL}}" alt="" class="avatar-sm">
+                    <strong>{{.QuotePost.Author.DisplayName}}</strong>
+                    <span class="username">@{{.QuotePost.Author.Username}}</span>
+                </a>
+            </div>
+            <div class="post-body markdown-body">
+                {{raw .QuotePost.ContentHTML}}
+            </div>
+            <div class="revision-meta">
+                Quoting revision {{.QuotePost.RevisionNumber}}{{if gt .QuotePost.RevisionCount .QuotePost.RevisionNumber}} of {{.QuotePost.RevisionCount}}{{end}}
+            </div>
+        </div>
+        {{end}}
+
+        <div class="editor" id="main-editor">
+            <div class="editor-tabs">
+                <button type="button" class="tab active" data-tab="write">Write</button>
+                <button type="button" class="tab" data-tab="preview">Preview</button>
+            </div>
+            <div class="tab-content write-tab active">
+                <textarea name="content" id="post-content"
+                          placeholder="Write your post here... (markdown supported)"
+                          rows="10" maxlength="10000" required>{{if .Post}}{{.Post.Content}}{{end}}</textarea>
+                <div class="editor-footer">
+                    <span class="help-text">Markdown supported. Drag & drop or paste images.</span>
+                    <span class="char-count" id="char-count"></span>
+                </div>
+            </div>
+            <div class="tab-content preview-tab">
+                <div class="preview-area markdown-body" id="preview-area"></div>
+            </div>
+        </div>
+
+        <div class="compose-actions">
+            <button type="submit" class="btn btn-primary">{{.SubmitLabel}}</button>
+            <a href="{{.CancelURL}}" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+{{end}}

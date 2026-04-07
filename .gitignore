@@ -1,0 +1,8 @@
+karpathytalk
+karpathytalk.db
+karpathytalk.db-wal
+karpathytalk.db-shm
+uploads/*
+!uploads/.keep
+.env
+.env.production
