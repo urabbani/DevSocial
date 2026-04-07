@@ -1037,75 +1037,101 @@ func (app *App) GetReplies(postID int64) ([]*Post, error) {
 // --- Likes ---
 
 func (app *App) ToggleLike(userID, postID int64) (liked bool, err error) {
+	tx, err := app.DB.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
 	var count int
-	err = app.DB.QueryRow(`SELECT COUNT(*) FROM likes WHERE user_id = ? AND post_id = ?`,
+	err = tx.QueryRow(`SELECT COUNT(*) FROM likes WHERE user_id = ? AND post_id = ?`,
 		userID, postID).Scan(&count)
 	if err != nil {
 		return false, err
 	}
 
 	if count > 0 {
-		_, err = app.DB.Exec(`DELETE FROM likes WHERE user_id = ? AND post_id = ?`, userID, postID)
-		if err != nil {
+		if _, err = tx.Exec(`DELETE FROM likes WHERE user_id = ? AND post_id = ?`, userID, postID); err != nil {
 			return false, err
 		}
-		app.DB.Exec(`UPDATE posts SET like_count = MAX(0, like_count - 1) WHERE id = ?`, postID)
-		return false, nil
+		if _, err = tx.Exec(`UPDATE posts SET like_count = MAX(0, like_count - 1) WHERE id = ?`, postID); err != nil {
+			return false, err
+		}
+		return false, tx.Commit()
 	}
 
-	_, err = app.DB.Exec(`INSERT INTO likes (user_id, post_id) VALUES (?, ?)`, userID, postID)
-	if err != nil {
+	if _, err = tx.Exec(`INSERT INTO likes (user_id, post_id) VALUES (?, ?)`, userID, postID); err != nil {
 		return false, err
 	}
-	app.DB.Exec(`UPDATE posts SET like_count = like_count + 1 WHERE id = ?`, postID)
-	return true, nil
+	if _, err = tx.Exec(`UPDATE posts SET like_count = like_count + 1 WHERE id = ?`, postID); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
 }
 
 // --- Reposts ---
 
 func (app *App) ToggleRepost(userID, postID, postRevisionID int64) (reposted bool, err error) {
+	tx, err := app.DB.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
 	var count int
-	err = app.DB.QueryRow(`SELECT COUNT(*) FROM reposts WHERE user_id = ? AND post_id = ?`,
+	err = tx.QueryRow(`SELECT COUNT(*) FROM reposts WHERE user_id = ? AND post_id = ?`,
 		userID, postID).Scan(&count)
 	if err != nil {
 		return false, err
 	}
 
 	if count > 0 {
-		_, err = app.DB.Exec(`DELETE FROM reposts WHERE user_id = ? AND post_id = ?`, userID, postID)
-		if err != nil {
+		if _, err = tx.Exec(`DELETE FROM reposts WHERE user_id = ? AND post_id = ?`, userID, postID); err != nil {
 			return false, err
 		}
-		app.DB.Exec(`UPDATE posts SET repost_count = MAX(0, repost_count - 1) WHERE id = ?`, postID)
-		return false, nil
+		if _, err = tx.Exec(`UPDATE posts SET repost_count = MAX(0, repost_count - 1) WHERE id = ?`, postID); err != nil {
+			return false, err
+		}
+		return false, tx.Commit()
 	}
 
-	_, err = app.DB.Exec(`INSERT INTO reposts (user_id, post_id, post_revision_id) VALUES (?, ?, ?)`,
-		userID, postID, postRevisionID)
-	if err != nil {
+	if _, err = tx.Exec(`INSERT INTO reposts (user_id, post_id, post_revision_id) VALUES (?, ?, ?)`,
+		userID, postID, postRevisionID); err != nil {
 		return false, err
 	}
-	app.DB.Exec(`UPDATE posts SET repost_count = repost_count + 1 WHERE id = ?`, postID)
-	return true, nil
+	if _, err = tx.Exec(`UPDATE posts SET repost_count = repost_count + 1 WHERE id = ?`, postID); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
 }
 
 // --- Bookmarks ---
 
 func (app *App) ToggleBookmark(userID, postID int64) (bookmarked bool, err error) {
+	tx, err := app.DB.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
 	var count int
-	err = app.DB.QueryRow(`SELECT COUNT(*) FROM bookmarks WHERE user_id = ? AND post_id = ?`,
+	err = tx.QueryRow(`SELECT COUNT(*) FROM bookmarks WHERE user_id = ? AND post_id = ?`,
 		userID, postID).Scan(&count)
 	if err != nil {
 		return false, err
 	}
 
 	if count > 0 {
-		_, err = app.DB.Exec(`DELETE FROM bookmarks WHERE user_id = ? AND post_id = ?`, userID, postID)
-		return false, err
+		if _, err = tx.Exec(`DELETE FROM bookmarks WHERE user_id = ? AND post_id = ?`, userID, postID); err != nil {
+			return false, err
+		}
+		return false, tx.Commit()
 	}
 
-	_, err = app.DB.Exec(`INSERT INTO bookmarks (user_id, post_id) VALUES (?, ?)`, userID, postID)
-	return true, err
+	if _, err = tx.Exec(`INSERT INTO bookmarks (user_id, post_id) VALUES (?, ?)`, userID, postID); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
 }
 
 // GetBookmarkedPosts returns bookmarks ordered by bookmark time.
