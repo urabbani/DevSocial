@@ -226,6 +226,53 @@ body.docs-view main.container {
     gap: 8px;
     margin-bottom: 12px;
 }
+.welcome-banner {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 12px;
+    padding: 14px 16px;
+    background: var(--bg);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+}
+.welcome-banner-copy p {
+    margin: 0;
+    color: var(--text-secondary);
+}
+.welcome-banner-copy p + p {
+    margin-top: 6px;
+}
+.welcome-banner-copy strong {
+    color: var(--text);
+}
+.welcome-banner-copy code {
+    font-size: 0.92em;
+}
+.welcome-banner-dismiss {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    margin: -2px -4px 0 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-tertiary);
+    font-size: 1.25rem;
+    line-height: 1;
+    cursor: pointer;
+}
+.welcome-banner-dismiss:hover {
+    color: var(--text);
+}
+.welcome-banner[hidden] {
+    display: none;
+}
 .activity-card {
     padding-top: 16px;
 }

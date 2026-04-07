@@ -222,14 +222,27 @@ function syncExpandablePosts(root) {
     });
 }
 
+function syncWelcomeBanner() {
+    var banner = document.querySelector('[data-welcome-banner]');
+    if (!banner) return;
+    var dismissed = false;
+    try {
+        dismissed = window.localStorage.getItem('kt-welcome-banner-dismissed') === '1';
+    } catch (e) {
+    }
+    banner.hidden = dismissed;
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     ensureCSRFInputs(document);
     syncExpandablePosts(document);
+    syncWelcomeBanner();
 });
 
 document.body.addEventListener('htmx:afterSwap', function(e) {
     ensureCSRFInputs(e.target);
     syncExpandablePosts(e.target);
+    syncWelcomeBanner();
 });
 
 document.body.addEventListener('htmx:configRequest', function(e) {
@@ -263,6 +276,19 @@ document.addEventListener('click', function(e) {
             continueLink.textContent = expanded
                 ? (continueLink.dataset.collapseLabel || 'Show less')
                 : (continueLink.dataset.expandLabel || 'Continue reading');
+        }
+        return;
+    }
+
+    const dismissWelcome = e.target.closest('[data-dismiss-welcome-banner]');
+    if (dismissWelcome) {
+        var banner = dismissWelcome.closest('[data-welcome-banner]');
+        if (banner) {
+            banner.hidden = true;
+        }
+        try {
+            window.localStorage.setItem('kt-welcome-banner-dismissed', '1');
+        } catch (err) {
         }
         return;
     }

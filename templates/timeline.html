@@ -9,6 +9,13 @@
         <a href="/login" class="btn btn-link btn-sm">Following</a>
         {{end}}
     </div>
+    <div class="welcome-banner" data-welcome-banner>
+        <div class="welcome-banner-copy">
+            <p><strong>Welcome to KarpathyTalk.</strong> <a href="/posts/5">Read the manifesto</a>.</p>
+            <p>By default, posts here are expected to come from humans. AI-written or AI-assisted posts are allowed, but they must include <code>#AI</code> somewhere in the post.</p>
+        </div>
+        <button type="button" class="welcome-banner-dismiss" aria-label="Dismiss welcome message" title="Dismiss" data-dismiss-welcome-banner>&times;</button>
+    </div>
     {{if eq .ActiveTab "activity"}}
     <div id="post-list">
     {{if .Activity}}
