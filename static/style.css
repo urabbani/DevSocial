@@ -226,6 +226,42 @@ body.docs-view main.container {
     gap: 8px;
     margin-bottom: 12px;
 }
+.activity-card {
+    padding-top: 16px;
+}
+.activity-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 6px;
+}
+.activity-time {
+    color: var(--text-tertiary);
+    font-size: 0.8125rem;
+    white-space: nowrap;
+}
+.activity-line {
+    color: var(--text-secondary);
+    font-size: 0.9375rem;
+    margin-bottom: 12px;
+}
+.activity-post-preview,
+.activity-subject {
+    border-top: 1px solid var(--border-light);
+    padding-top: 12px;
+    margin-top: 12px;
+}
+.activity-subject-label {
+    color: var(--text-tertiary);
+    font-size: 0.75rem;
+    margin-bottom: 4px;
+}
+.activity-preview-link {
+    display: inline-block;
+    font-size: 0.8125rem;
+    margin-bottom: 8px;
+}
 .post-card-full { margin-bottom: 24px; }
 .post-header {
     display: flex;

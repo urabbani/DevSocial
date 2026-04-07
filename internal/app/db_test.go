@@ -229,6 +229,75 @@ func TestGetFollowingTimelinePosts(t *testing.T) {
 	}
 }
 
+func TestGetActivityItems(t *testing.T) {
+	app := newTestApp(t)
+
+	me, err := app.UpsertUser(1, "me", "Me", "https://example.com/me.png")
+	if err != nil {
+		t.Fatalf("UpsertUser(me): %v", err)
+	}
+	replyUser, err := app.UpsertUser(2, "replyuser", "Reply User", "https://example.com/reply.png")
+	if err != nil {
+		t.Fatalf("UpsertUser(replyUser): %v", err)
+	}
+	liker, err := app.UpsertUser(3, "liker", "Liker", "https://example.com/liker.png")
+	if err != nil {
+		t.Fatalf("UpsertUser(liker): %v", err)
+	}
+	follower, err := app.UpsertUser(4, "follower", "Follower", "https://example.com/follower.png")
+	if err != nil {
+		t.Fatalf("UpsertUser(follower): %v", err)
+	}
+
+	postID, err := app.CreatePost(me.ID, "my root", markdownHTML(t, "my root"), nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("CreatePost(my root): %v", err)
+	}
+	if _, err := app.CreatePost(replyUser.ID, "reply", markdownHTML(t, "reply"), &postID, nil, nil, nil); err != nil {
+		t.Fatalf("CreatePost(reply): %v", err)
+	}
+	if _, err := app.ToggleLike(liker.ID, postID); err != nil {
+		t.Fatalf("ToggleLike: %v", err)
+	}
+	if _, err := app.ToggleFollow(follower.ID, me.ID); err != nil {
+		t.Fatalf("ToggleFollow: %v", err)
+	}
+
+	items, _, err := app.GetActivityItems(me.ID, 20, "")
+	if err != nil {
+		t.Fatalf("GetActivityItems: %v", err)
+	}
+	if len(items) < 3 {
+		t.Fatalf("len(items) = %d, want at least 3", len(items))
+	}
+
+	seen := map[string]bool{}
+	for _, item := range items {
+		seen[item.Type] = true
+		if item.Actor == nil {
+			t.Fatalf("activity item %q missing actor", item.Type)
+		}
+		if item.Type == "follow" {
+			if item.SubjectPost != nil {
+				t.Fatalf("follow item should not have subject post")
+			}
+			continue
+		}
+		if item.SubjectPost == nil {
+			t.Fatalf("activity item %q missing subject post", item.Type)
+		}
+	}
+	if !seen["reply"] {
+		t.Fatal("missing reply activity")
+	}
+	if !seen["like"] {
+		t.Fatal("missing like activity")
+	}
+	if !seen["follow"] {
+		t.Fatal("missing follow activity")
+	}
+}
+
 func TestLoadTemplates(t *testing.T) {
 	LoadTemplates()
 }

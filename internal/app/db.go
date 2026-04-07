@@ -506,6 +506,129 @@ func (app *App) GetTimelinePosts(limit int, beforeID int64) ([]*Post, error) {
 	return app.scanPosts(rows)
 }
 
+func (app *App) GetActivityItems(userID int64, limit int, before string) ([]*ActivityItem, string, error) {
+	if limit <= 0 {
+		limit = postsPerPage
+	}
+
+	query := `
+		WITH events AS (
+			SELECT 'reply' AS type, p.author_id AS actor_id, p.created_at AS created_at, p.id AS event_post_id, parent.id AS subject_post_id
+			FROM posts p
+			JOIN posts parent ON p.parent_post_id = parent.id
+			WHERE parent.author_id = ? AND p.author_id != ?
+
+			UNION ALL
+
+			SELECT 'quote' AS type, p.author_id AS actor_id, p.created_at AS created_at, p.id AS event_post_id, quoted.id AS subject_post_id
+			FROM posts p
+			JOIN posts quoted ON p.quote_of_id = quoted.id
+			WHERE quoted.author_id = ? AND p.author_id != ?
+
+			UNION ALL
+
+			SELECT 'repost' AS type, r.user_id AS actor_id, r.created_at AS created_at, NULL AS event_post_id, p.id AS subject_post_id
+			FROM reposts r
+			JOIN posts p ON r.post_id = p.id
+			WHERE p.author_id = ? AND r.user_id != ?
+
+			UNION ALL
+
+			SELECT 'like' AS type, l.user_id AS actor_id, l.created_at AS created_at, NULL AS event_post_id, p.id AS subject_post_id
+			FROM likes l
+			JOIN posts p ON l.post_id = p.id
+			WHERE p.author_id = ? AND l.user_id != ?
+
+			UNION ALL
+
+			SELECT 'follow' AS type, f.follower_id AS actor_id, f.created_at AS created_at, NULL AS event_post_id, NULL AS subject_post_id
+			FROM follows f
+			WHERE f.following_id = ? AND f.follower_id != ?
+		)
+		SELECT type, actor_id, created_at, event_post_id, subject_post_id
+		FROM events
+	`
+	args := []any{userID, userID, userID, userID, userID, userID, userID, userID, userID, userID}
+	if before != "" {
+		query += " WHERE created_at < ?"
+		args = append(args, before)
+	}
+	query += " ORDER BY created_at DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := app.DB.Query(query, args...)
+	if err != nil {
+		return nil, "", err
+	}
+
+	var items []*ActivityItem
+	actorIDs := map[int64]bool{}
+	eventPostIDs := map[int64]bool{}
+	subjectPostIDs := map[int64]bool{}
+	for rows.Next() {
+		item := &ActivityItem{}
+		var eventPostID sql.NullInt64
+		var subjectPostID sql.NullInt64
+		if err := rows.Scan(&item.Type, &item.ActorID, &item.CreatedAt, &eventPostID, &subjectPostID); err != nil {
+			rows.Close()
+			return nil, "", err
+		}
+		actorIDs[item.ActorID] = true
+		if eventPostID.Valid {
+			item.EventPostID = &eventPostID.Int64
+			eventPostIDs[eventPostID.Int64] = true
+		}
+		if subjectPostID.Valid {
+			item.SubjectPostID = &subjectPostID.Int64
+			subjectPostIDs[subjectPostID.Int64] = true
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, "", err
+	}
+	rows.Close()
+
+	actorCache := map[int64]*User{}
+	for actorID := range actorIDs {
+		if actor, err := app.getUserByID(actorID); err == nil {
+			actorCache[actorID] = actor
+		}
+	}
+
+	postCache := map[int64]*Post{}
+	for postID := range eventPostIDs {
+		if post, err := app.GetPostWithAuthor(postID); err == nil {
+			postCache[postID] = post
+		}
+	}
+	for postID := range subjectPostIDs {
+		if _, ok := postCache[postID]; ok {
+			continue
+		}
+		if post, err := app.GetPostWithAuthor(postID); err == nil {
+			postCache[postID] = post
+		}
+	}
+
+	for _, item := range items {
+		item.Actor = actorCache[item.ActorID]
+		if item.EventPostID != nil {
+			item.EventPost = postCache[*item.EventPostID]
+		}
+		if item.SubjectPostID != nil {
+			item.SubjectPost = postCache[*item.SubjectPostID]
+		}
+	}
+
+	var nextCursor string
+	if len(items) > 0 {
+		nextCursor = items[len(items)-1].CreatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return items, nextCursor, nil
+}
+
 func (app *App) GetFollowingTimelinePosts(userID int64, limit int, beforeID int64) ([]*Post, error) {
 	var rows *sql.Rows
 	var err error

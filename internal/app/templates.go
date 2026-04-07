@@ -79,6 +79,7 @@ func LoadTemplates() map[string]*template.Template {
 
 	layout := projectPath("templates", "layout.html")
 	fragment := projectPath("templates", "_postfragment.html")
+	activityFragment := projectPath("templates", "_activityfragment.html")
 	pages, _ := filepath.Glob(projectPath("templates", "*.html"))
 
 	for _, page := range pages {
@@ -99,6 +100,12 @@ func LoadTemplates() map[string]*template.Template {
 		panic(fmt.Sprintf("parse fragment template: %v", err))
 	}
 	templates["_postfragment.html"] = t
+
+	t, err = template.New("").Funcs(funcMap).ParseFiles(activityFragment)
+	if err != nil {
+		panic(fmt.Sprintf("parse activity fragment template: %v", err))
+	}
+	templates["_activityfragment.html"] = t
 
 	return templates
 }
@@ -126,6 +133,19 @@ func (app *App) renderFragment(w http.ResponseWriter, data *PageData) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := t.ExecuteTemplate(w, "postfragment", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (app *App) renderActivityFragment(w http.ResponseWriter, data *PageData) {
+	t, ok := app.Templates["_activityfragment.html"]
+	if !ok {
+		http.Error(w, "activity fragment template not found", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := t.ExecuteTemplate(w, "activityfragment", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }

@@ -60,6 +60,17 @@ type Post struct {
 	RepostedBy *User
 }
 
+type ActivityItem struct {
+	Type          string
+	ActorID       int64
+	Actor         *User
+	CreatedAt     time.Time
+	EventPostID   *int64
+	SubjectPostID *int64
+	EventPost     *Post
+	SubjectPost   *Post
+}
+
 type PageData struct {
 	CurrentUser  *User
 	Title        string
@@ -86,4 +97,5 @@ type PageData struct {
 	ActiveTab    string
 	DocsHTML     string
 	DocsMarkdown string
+	Activity     []*ActivityItem
 }

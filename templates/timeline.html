@@ -4,10 +4,77 @@
         <a href="/?tab=latest" class="btn {{if eq .ActiveTab "latest"}}btn-secondary{{else}}btn-link{{end}} btn-sm">Latest</a>
         {{if .CurrentUser}}
         <a href="/?tab=following" class="btn {{if eq .ActiveTab "following"}}btn-secondary{{else}}btn-link{{end}} btn-sm">Following</a>
+        <a href="/?tab=activity" class="btn {{if eq .ActiveTab "activity"}}btn-secondary{{else}}btn-link{{end}} btn-sm">Activity</a>
         {{else}}
         <a href="/login" class="btn btn-link btn-sm">Following</a>
         {{end}}
     </div>
+    {{if eq .ActiveTab "activity"}}
+    <div id="post-list">
+    {{if .Activity}}
+        {{range .Activity}}
+        <article class="post-card activity-card">
+            <div class="activity-meta">
+                <a href="/user/{{.Actor.Username}}" class="post-author">
+                    <img src="{{.Actor.AvatarURL}}" alt="" class="avatar-sm">
+                    <strong>{{.Actor.DisplayName}}</strong>
+                    <span class="username">@{{.Actor.Username}}</span>
+                </a>
+                <span class="activity-time">{{timeago .CreatedAt}}</span>
+            </div>
+            <p class="activity-line">
+                {{if eq .Type "reply"}}replied to your post{{end}}
+                {{if eq .Type "quote"}}quoted your post{{end}}
+                {{if eq .Type "repost"}}reposted your post{{end}}
+                {{if eq .Type "like"}}liked your post{{end}}
+                {{if eq .Type "follow"}}followed you{{end}}
+            </p>
+
+            {{if .EventPost}}
+            <div class="activity-post-preview">
+                <a href="/posts/{{.EventPost.ID}}" class="activity-preview-link">{{if eq .Type "quote"}}View quote post{{else}}View reply{{end}}</a>
+                <div class="post-body markdown-body{{if shouldtruncate .EventPost.Content}} post-body-preview{{end}}">
+                    {{raw .EventPost.ContentHTML}}
+                </div>
+                {{if shouldtruncate .EventPost.Content}}
+                <button type="button" class="continue-link" data-expand-label="Continue reading" data-collapse-label="Show less">Continue reading</button>
+                {{end}}
+            </div>
+            {{end}}
+
+            {{if .SubjectPost}}
+            <div class="activity-subject">
+                <div class="activity-subject-label">Your post</div>
+                <a href="/posts/{{.SubjectPost.ID}}" class="activity-preview-link">Open post</a>
+                <div class="post-body markdown-body{{if shouldtruncate .SubjectPost.Content}} post-body-preview{{end}}">
+                    {{raw .SubjectPost.ContentHTML}}
+                </div>
+                {{if shouldtruncate .SubjectPost.Content}}
+                <button type="button" class="continue-link" data-expand-label="Continue reading" data-collapse-label="Show less">Continue reading</button>
+                {{end}}
+            </div>
+            {{end}}
+        </article>
+        {{end}}
+
+        {{if .HasMore}}
+        <div class="load-more" id="load-more">
+            <button class="btn btn-secondary"
+                    hx-get="{{.LoadMoreURL}}"
+                    hx-target="#load-more"
+                    hx-swap="outerHTML">
+                Load More
+            </button>
+        </div>
+        {{end}}
+    {{else}}
+        <div class="empty-state">
+            <h2>No activity yet</h2>
+            <p>When other people follow you or engage with your posts, it will show up here.</p>
+        </div>
+    {{end}}
+    </div>
+    {{else}}
     <div id="post-list">
     {{if .Posts}}
         {{range .Posts}}
@@ -124,5 +191,6 @@
         </div>
     {{end}}
     </div>
+    {{end}}
 </div>
 {{end}}

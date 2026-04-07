@@ -42,15 +42,49 @@ func (app *App) handleTimeline(w http.ResponseWriter, r *http.Request) {
 
 	user := GetCurrentUser(r)
 	activeTab := r.URL.Query().Get("tab")
-	if activeTab != "following" {
+	if activeTab != "following" && activeTab != "activity" {
 		activeTab = "latest"
 	}
-	if user == nil && activeTab == "following" {
+	if user == nil && (activeTab == "following" || activeTab == "activity") {
 		activeTab = "latest"
 	}
 
+	beforeCursor := r.URL.Query().Get("before")
 	beforeID := int64(0)
-	if v := r.URL.Query().Get("before"); v != "" {
+	if activeTab != "activity" && beforeCursor != "" {
+		beforeID, _ = strconv.ParseInt(beforeCursor, 10, 64)
+	}
+
+	data := &PageData{
+		CurrentUser: user,
+		Title:       "KarpathyTalk",
+		ActiveTab:   activeTab,
+	}
+
+	if activeTab == "activity" {
+		items, nextCursor, err := app.GetActivityItems(user.ID, postsPerPage+1, beforeCursor)
+		if err != nil {
+			app.renderStatus(w, r, http.StatusInternalServerError, "Activity Error", "Failed to load activity.")
+			return
+		}
+		hasMore := len(items) > postsPerPage
+		if hasMore {
+			items = items[:postsPerPage]
+		}
+		data.Activity = items
+		data.HasMore = hasMore
+		if hasMore && len(items) > 0 {
+			data.LoadMoreURL = fmt.Sprintf("/?tab=activity&before=%s", url.QueryEscape(nextCursor))
+		}
+		if r.Header.Get("HX-Request") == "true" && beforeCursor != "" {
+			app.renderActivityFragment(w, data)
+			return
+		}
+		app.render(w, "timeline.html", data)
+		return
+	}
+
+	if v := beforeCursor; v != "" {
 		beforeID, _ = strconv.ParseInt(v, 10, 64)
 	}
 
@@ -77,13 +111,8 @@ func (app *App) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	}
 	app.HydratePosts(posts, uid)
 
-	data := &PageData{
-		CurrentUser: user,
-		Title:       "KarpathyTalk",
-		Posts:       posts,
-		HasMore:     hasMore,
-		ActiveTab:   activeTab,
-	}
+	data.Posts = posts
+	data.HasMore = hasMore
 	if hasMore && len(posts) > 0 {
 		data.NextCursor = posts[len(posts)-1].ID
 		if activeTab == "following" {
