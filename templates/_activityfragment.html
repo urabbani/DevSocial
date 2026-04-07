@@ -18,8 +18,9 @@
     </p>
 
     {{if .EventPost}}
-    <div class="activity-post-preview">
+    <div class="activity-post-preview{{if hasaitag .EventPost.Content}} ai-post{{end}}">
         <a href="/posts/{{.EventPost.ID}}" class="activity-preview-link">{{if eq .Type "quote"}}View quote post{{else}}View reply{{end}}</a>
+        {{if hasaitag .EventPost.Content}}<span class="ai-badge">AI</span>{{end}}
         <div class="post-body markdown-body{{if shouldtruncate .EventPost.Content}} post-body-preview{{end}}">
             {{raw .EventPost.ContentHTML}}
         </div>
@@ -30,9 +31,10 @@
     {{end}}
 
     {{if .SubjectPost}}
-    <div class="activity-subject">
+    <div class="activity-subject{{if hasaitag .SubjectPost.Content}} ai-post{{end}}">
         <div class="activity-subject-label">Your post</div>
         <a href="/posts/{{.SubjectPost.ID}}" class="activity-preview-link">Open post</a>
+        {{if hasaitag .SubjectPost.Content}}<span class="ai-badge">AI</span>{{end}}
         <div class="post-body markdown-body{{if shouldtruncate .SubjectPost.Content}} post-body-preview{{end}}">
             {{raw .SubjectPost.ContentHTML}}
         </div>

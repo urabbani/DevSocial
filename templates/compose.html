@@ -11,7 +11,7 @@
     {{end}}
 
     {{if .ParentPost}}
-    <div class="quoted-post">
+    <div class="quoted-post{{if hasaitag .ParentPost.Content}} ai-post{{end}}">
         <div class="post-header">
             <a href="/user/{{.ParentPost.Author.Username}}" class="post-author">
                 <img src="{{.ParentPost.Author.AvatarURL}}" alt="" class="avatar-sm">
@@ -24,6 +24,9 @@
         </div>
         <div class="revision-meta">
             Replying to revision {{.ParentPost.RevisionNumber}}
+            {{if hasaitag .ParentPost.Content}}
+            <span class="ai-badge">AI</span>
+            {{end}}
         </div>
     </div>
     {{end}}
@@ -37,7 +40,7 @@
         <input type="hidden" name="quote_of_id" value="{{.QuotePost.ID}}">
         <input type="hidden" name="quote_of_revision_id" value="{{.QuotePost.RevisionID}}">
 
-        <div class="quoted-post">
+        <div class="quoted-post{{if hasaitag .QuotePost.Content}} ai-post{{end}}">
             <div class="post-header">
                 <a href="/user/{{.QuotePost.Author.Username}}" class="post-author">
                     <img src="{{.QuotePost.Author.AvatarURL}}" alt="" class="avatar-sm">
@@ -50,6 +53,9 @@
             </div>
             <div class="revision-meta">
                 Quoting revision {{.QuotePost.RevisionNumber}}{{if gt .QuotePost.RevisionCount .QuotePost.RevisionNumber}} of {{.QuotePost.RevisionCount}}{{end}}
+                {{if hasaitag .QuotePost.Content}}
+                <span class="ai-badge">AI</span>
+                {{end}}
             </div>
         </div>
         {{end}}

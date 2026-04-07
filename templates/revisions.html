@@ -13,7 +13,7 @@
         {{end}}
     </div>
 
-    <div class="post-card post-card-full">
+    <div class="post-card post-card-full{{if hasaitag .Post.Content}} ai-post{{end}}">
         <div class="post-header">
             <a href="/user/{{.Post.Author.Username}}" class="post-author">
                 <img src="{{.Post.Author.AvatarURL}}" alt="" class="avatar">
@@ -22,7 +22,12 @@
                     <span class="username">@{{.Post.Author.Username}}</span>
                 </div>
             </a>
-            <span class="post-time">{{timeago .Post.CreatedAt}}</span>
+            <div class="post-meta">
+                <span class="post-time">{{timeago .Post.CreatedAt}}</span>
+                {{if hasaitag .Post.Content}}
+                <span class="ai-badge">AI</span>
+                {{end}}
+            </div>
         </div>
         <div class="post-body markdown-body">
             {{raw .Post.ContentHTML}}

@@ -38,8 +38,9 @@
             </p>
 
             {{if .EventPost}}
-            <div class="activity-post-preview">
+            <div class="activity-post-preview{{if hasaitag .EventPost.Content}} ai-post{{end}}">
                 <a href="/posts/{{.EventPost.ID}}" class="activity-preview-link">{{if eq .Type "quote"}}View quote post{{else}}View reply{{end}}</a>
+                {{if hasaitag .EventPost.Content}}<span class="ai-badge">AI</span>{{end}}
                 <div class="post-body markdown-body{{if shouldtruncate .EventPost.Content}} post-body-preview{{end}}">
                     {{raw .EventPost.ContentHTML}}
                 </div>
@@ -50,9 +51,10 @@
             {{end}}
 
             {{if .SubjectPost}}
-            <div class="activity-subject">
+            <div class="activity-subject{{if hasaitag .SubjectPost.Content}} ai-post{{end}}">
                 <div class="activity-subject-label">Your post</div>
                 <a href="/posts/{{.SubjectPost.ID}}" class="activity-preview-link">Open post</a>
+                {{if hasaitag .SubjectPost.Content}}<span class="ai-badge">AI</span>{{end}}
                 <div class="post-body markdown-body{{if shouldtruncate .SubjectPost.Content}} post-body-preview{{end}}">
                     {{raw .SubjectPost.ContentHTML}}
                 </div>
@@ -85,7 +87,7 @@
     <div id="post-list">
     {{if .Posts}}
         {{range .Posts}}
-        <article class="post-card" id="post-{{.ID}}">
+        <article class="post-card{{if hasaitag .Content}} ai-post{{end}}" id="post-{{.ID}}">
             <div class="post-header">
                 <a href="/user/{{.Author.Username}}" class="post-author">
                     <img src="{{.Author.AvatarURL}}" alt="" class="avatar">
@@ -96,6 +98,9 @@
                 </a>
                 <div class="post-meta">
                     <a href="/posts/{{.ID}}" class="post-time">{{timeago .CreatedAt}}</a>
+                    {{if hasaitag .Content}}
+                    <span class="ai-badge">AI</span>
+                    {{end}}
                     {{if gt .RevisionCount 1}}
                     <a href="/posts/{{.ID}}/revisions" class="revision-link">Edited</a>
                     {{end}}
@@ -111,7 +116,7 @@
             {{end}}
 
             {{if .QuotedPost}}
-            <div class="quoted-post">
+            <div class="quoted-post{{if hasaitag .QuotedPost.Content}} ai-post{{end}}">
                 <div class="post-header">
                     <a href="/user/{{.QuotedPost.Author.Username}}" class="post-author">
                         <img src="{{.QuotedPost.Author.AvatarURL}}" alt="" class="avatar-sm">

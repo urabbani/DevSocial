@@ -7,9 +7,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
+
+var aiTagPattern = regexp.MustCompile(`(?i)(^|[^\pL\pN_])#ai($|[^\pL\pN_])`)
 
 var funcMap = template.FuncMap{
 	"timeago":        timeAgo,
@@ -18,6 +21,7 @@ var funcMap = template.FuncMap{
 	"raw":            func(s string) template.HTML { return template.HTML(s) },
 	"add":            func(a, b int) int { return a + b },
 	"shouldtruncate": shouldTruncatePostContent,
+	"hasaitag":       hasAILabelTag,
 	"asset":          assetURL,
 }
 
@@ -63,6 +67,10 @@ func shouldTruncatePostContent(content string) bool {
 		return true
 	}
 	return false
+}
+
+func hasAILabelTag(content string) bool {
+	return aiTagPattern.MatchString(content)
 }
 
 func assetURL(path string) string {

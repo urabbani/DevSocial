@@ -1,6 +1,6 @@
 {{define "postfragment"}}
 {{range .Posts}}
-<article class="post-card" id="post-{{.ID}}">
+<article class="post-card{{if hasaitag .Content}} ai-post{{end}}" id="post-{{.ID}}">
     <div class="post-header">
         <a href="/user/{{.Author.Username}}" class="post-author">
             <img src="{{.Author.AvatarURL}}" alt="" class="avatar">
@@ -11,6 +11,9 @@
         </a>
         <div class="post-meta">
             <a href="/posts/{{.ID}}" class="post-time">{{timeago .CreatedAt}}</a>
+            {{if hasaitag .Content}}
+            <span class="ai-badge">AI</span>
+            {{end}}
             {{if gt .RevisionCount 1}}
             <a href="/posts/{{.ID}}/revisions" class="revision-link">Edited</a>
             {{end}}
@@ -26,7 +29,7 @@
     {{end}}
 
     {{if .QuotedPost}}
-    <div class="quoted-post">
+    <div class="quoted-post{{if hasaitag .QuotedPost.Content}} ai-post{{end}}">
         <div class="post-header">
             <a href="/user/{{.QuotedPost.Author.Username}}" class="post-author">
                 <img src="{{.QuotedPost.Author.AvatarURL}}" alt="" class="avatar-sm">

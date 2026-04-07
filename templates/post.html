@@ -14,7 +14,7 @@
     </div>
     {{end}}
 
-    <article class="post-card post-card-full">
+    <article class="post-card post-card-full{{if hasaitag .Post.Content}} ai-post{{end}}">
         <div class="post-header">
             <a href="/user/{{.Post.Author.Username}}" class="post-author">
                 <img src="{{.Post.Author.AvatarURL}}" alt="" class="avatar">
@@ -25,6 +25,9 @@
             </a>
             <div class="post-meta">
                 <span class="post-time">{{timeago .Post.CreatedAt}}</span>
+                {{if hasaitag .Post.Content}}
+                <span class="ai-badge">AI</span>
+                {{end}}
                 {{if gt .Post.RevisionCount 1}}
                 <a href="/posts/{{.Post.ID}}/revisions" class="revision-link">
                     {{if eq .Post.RevisionNumber .Post.RevisionCount}}Edited{{else}}Revision {{.Post.RevisionNumber}} of {{.Post.RevisionCount}}{{end}}
@@ -39,7 +42,7 @@
         <template id="copy-post-{{.Post.ID}}-{{.Post.RevisionNumber}}">{{.Post.Content}}</template>
 
         {{if .Post.QuotedPost}}
-        <div class="quoted-post">
+        <div class="quoted-post{{if hasaitag .Post.QuotedPost.Content}} ai-post{{end}}">
             <div class="post-header">
                 <a href="/user/{{.Post.QuotedPost.Author.Username}}" class="post-author">
                     <img src="{{.Post.QuotedPost.Author.AvatarURL}}" alt="" class="avatar-sm">
@@ -144,7 +147,7 @@
 
         <div class="comment-list">
             {{range .Replies}}
-            <article class="comment thread-reply" id="reply-{{.ID}}" style="margin-left: {{indent .Depth}}px;">
+            <article class="comment thread-reply{{if hasaitag .Content}} ai-post{{end}}" id="reply-{{.ID}}" style="margin-left: {{indent .Depth}}px;">
                 <div class="comment-header">
                     <a href="/user/{{.Author.Username}}" class="post-author">
                         <img src="{{.Author.AvatarURL}}" alt="" class="avatar-sm">
@@ -158,6 +161,9 @@
                     <span class="revision-chip">on rev {{.ParentPost.RevisionNumber}}</span>
                     {{end}}
                     <a href="/posts/{{.ID}}" class="post-time">{{timeago .CreatedAt}}</a>
+                    {{if hasaitag .Content}}
+                    <span class="ai-badge">AI</span>
+                    {{end}}
                     {{if gt .RevisionCount 1}}
                     <a href="/posts/{{.ID}}/revisions" class="revision-link">Edited</a>
                     {{end}}
@@ -167,7 +173,7 @@
                 </div>
                 <template id="copy-post-{{.ID}}-{{.RevisionNumber}}">{{.Content}}</template>
                 {{if .QuotedPost}}
-                <div class="quoted-post">
+                <div class="quoted-post{{if hasaitag .QuotedPost.Content}} ai-post{{end}}">
                     <div class="post-header">
                         <a href="/user/{{.QuotedPost.Author.Username}}" class="post-author">
                             <img src="{{.QuotedPost.Author.AvatarURL}}" alt="" class="avatar-sm">

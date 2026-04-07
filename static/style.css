@@ -23,6 +23,9 @@
     --info-text: #24538f;
     --danger-bg: #fde8e8;
     --danger-border: #f5c6c6;
+    --ai-bg: #f5f8ff;
+    --ai-border: #c9d8fb;
+    --ai-text: #35589a;
     --fade-transparent: rgba(255,255,255,0);
     --radius: 6px;
     --radius-lg: 10px;
@@ -56,6 +59,9 @@
         --info-text: #8ecbff;
         --danger-bg: #2d1418;
         --danger-border: #5a2229;
+        --ai-bg: #122033;
+        --ai-border: #2f4b71;
+        --ai-text: #9ac2ff;
         --fade-transparent: rgba(13,17,23,0);
         --shadow-sm: 0 1px 2px rgba(0,0,0,0.32);
         --shadow: 0 8px 24px rgba(1,4,9,0.26);
@@ -84,6 +90,9 @@
     --info-text: #8ecbff;
     --danger-bg: #2d1418;
     --danger-border: #5a2229;
+    --ai-bg: #122033;
+    --ai-border: #2f4b71;
+    --ai-text: #9ac2ff;
     --fade-transparent: rgba(13,17,23,0);
     --shadow-sm: 0 1px 2px rgba(0,0,0,0.32);
     --shadow: 0 8px 24px rgba(1,4,9,0.26);
@@ -220,6 +229,22 @@ body.docs-view main.container {
     padding: 20px;
     margin-bottom: 12px;
     box-shadow: var(--shadow-sm);
+}
+.ai-post {
+    background: var(--ai-bg);
+    border-color: var(--ai-border);
+}
+.ai-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--bg);
+    border: 1px solid var(--ai-border);
+    color: var(--ai-text);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
 }
 .timeline-tabs {
     display: flex;
