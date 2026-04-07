@@ -16,6 +16,8 @@ import (
 
 var errPostUnchanged = errors.New("post unchanged")
 
+const maxReplyTreeDepth = 50
+
 type PostQuery struct {
 	AuthorID     *int64
 	HasParent    *bool
@@ -984,13 +986,14 @@ func (app *App) GetReplies(postID int64) ([]*Post, error) {
 				   p.like_count, p.repost_count, p.comment_count, p.current_revision_id, p.revision_count, rt.depth + 1
 			FROM posts p
 			JOIN reply_tree rt ON p.parent_post_id = rt.id
+			WHERE rt.depth < ?
 		)
 		SELECT id, author_id, content, content_html, parent_post_id, parent_post_revision_id,
 			   quote_of_id, quote_of_revision_id, created_at, edited_at,
 			   like_count, repost_count, comment_count, current_revision_id, revision_count, depth
 		FROM reply_tree
 		ORDER BY created_at ASC, id ASC
-	`, postID)
+	`, postID, maxReplyTreeDepth)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -295,6 +296,41 @@ func TestGetActivityItems(t *testing.T) {
 	}
 	if !seen["follow"] {
 		t.Fatal("missing follow activity")
+	}
+}
+
+func TestGetRepliesCapsDepth(t *testing.T) {
+	app := newTestApp(t)
+
+	author, err := app.UpsertUser(1, "author", "Author", "https://example.com/a.png")
+	if err != nil {
+		t.Fatalf("UpsertUser(author): %v", err)
+	}
+
+	rootID, err := app.CreatePost(author.ID, "root", markdownHTML(t, "root"), nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("CreatePost(root): %v", err)
+	}
+
+	parentID := rootID
+	for i := 0; i < maxReplyTreeDepth+10; i++ {
+		content := fmt.Sprintf("reply %d", i)
+		replyID, err := app.CreatePost(author.ID, content, markdownHTML(t, content), &parentID, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("CreatePost(reply %d): %v", i, err)
+		}
+		parentID = replyID
+	}
+
+	replies, err := app.GetReplies(rootID)
+	if err != nil {
+		t.Fatalf("GetReplies: %v", err)
+	}
+	if len(replies) != maxReplyTreeDepth+1 {
+		t.Fatalf("len(replies) = %d, want %d", len(replies), maxReplyTreeDepth+1)
+	}
+	if replies[len(replies)-1].Depth != maxReplyTreeDepth {
+		t.Fatalf("last reply depth = %d, want %d", replies[len(replies)-1].Depth, maxReplyTreeDepth)
 	}
 }
 
