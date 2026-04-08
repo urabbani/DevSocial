@@ -80,6 +80,15 @@ CREATE TABLE IF NOT EXISTS uploads (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Materialized trending feed: rebuilt periodically by a background goroutine.
+-- rank is dense (1..N) and used as the pagination cursor. ON DELETE CASCADE
+-- keeps the table consistent with posts between rebuilds.
+CREATE TABLE IF NOT EXISTS trending_posts (
+    rank INTEGER PRIMARY KEY,
+    post_id INTEGER NOT NULL UNIQUE REFERENCES posts(id) ON DELETE CASCADE,
+    score REAL NOT NULL
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);

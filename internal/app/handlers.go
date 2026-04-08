@@ -42,7 +42,7 @@ func (app *App) handleTimeline(w http.ResponseWriter, r *http.Request) {
 
 	user := GetCurrentUser(r)
 	activeTab := r.URL.Query().Get("tab")
-	if activeTab != "following" && activeTab != "activity" {
+	if activeTab != "following" && activeTab != "activity" && activeTab != "trending" {
 		activeTab = "latest"
 	}
 	if user == nil && (activeTab == "following" || activeTab == "activity") {
@@ -78,6 +78,36 @@ func (app *App) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.Header.Get("HX-Request") == "true" && beforeCursor != "" {
 			app.renderActivityFragment(w, data)
+			return
+		}
+		app.render(w, "timeline.html", data)
+		return
+	}
+
+	if activeTab == "trending" {
+		afterRank, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+		posts, ranks, err := app.GetTrendingPosts(postsPerPage+1, afterRank)
+		if err != nil {
+			app.renderStatus(w, r, http.StatusInternalServerError, "Timeline Error", "Failed to load trending.")
+			return
+		}
+		hasMore := len(posts) > postsPerPage
+		if hasMore {
+			posts = posts[:postsPerPage]
+			ranks = ranks[:postsPerPage]
+		}
+		var uid int64
+		if user != nil {
+			uid = user.ID
+		}
+		app.HydratePosts(posts, uid)
+		data.Posts = posts
+		data.HasMore = hasMore
+		if hasMore && len(ranks) > 0 {
+			data.LoadMoreURL = fmt.Sprintf("/?tab=trending&after=%d", ranks[len(ranks)-1])
+		}
+		if r.Header.Get("HX-Request") == "true" && afterRank > 0 {
+			app.renderFragment(w, data)
 			return
 		}
 		app.render(w, "timeline.html", data)

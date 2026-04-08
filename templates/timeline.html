@@ -2,6 +2,7 @@
 <div class="timeline">
     <div class="timeline-tabs">
         <a href="/?tab=latest" class="btn {{if eq .ActiveTab "latest"}}btn-secondary{{else}}btn-link{{end}} btn-sm">Latest</a>
+        <a href="/?tab=trending" class="btn {{if eq .ActiveTab "trending"}}btn-secondary{{else}}btn-link{{end}} btn-sm">Trending</a>
         {{if .CurrentUser}}
         <a href="/?tab=following" class="btn {{if eq .ActiveTab "following"}}btn-secondary{{else}}btn-link{{end}} btn-sm">Following</a>
         <a href="/?tab=activity" class="btn {{if eq .ActiveTab "activity"}}btn-secondary{{else}}btn-link{{end}} btn-sm">Activity</a>

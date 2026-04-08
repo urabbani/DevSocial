@@ -16,7 +16,7 @@ type App struct {
 }
 
 func New(db *sql.DB, githubClientID, githubClientSecret, baseURL string) *App {
-	return &App{
+	app := &App{
 		DB:                 db,
 		GitHubClientID:     githubClientID,
 		GitHubClientSecret: githubClientSecret,
@@ -24,6 +24,8 @@ func New(db *sql.DB, githubClientID, githubClientSecret, baseURL string) *App {
 		Templates:          LoadTemplates(),
 		RateLimiter:        NewIPRateLimiter(),
 	}
+	app.startTrendingRebuilder()
+	return app
 }
 
 func (app *App) Handler() http.Handler {
