@@ -30,7 +30,7 @@ func TestHandleDocsRaw(t *testing.T) {
 
 func TestHandlePostMarkdown(t *testing.T) {
 	app := newTestApp(t)
-	app.BaseURL = "https://karpathytalk.com"
+	app.BaseURL = "https://devsocial.app"
 
 	author, err := app.UpsertUser(1, "author", "Author", "https://example.com/a.png")
 	if err != nil {
@@ -65,14 +65,14 @@ func TestHandlePostMarkdown(t *testing.T) {
 	if !strings.Contains(body, "author_username: \"author\"") {
 		t.Fatalf("post markdown missing author: %q", body)
 	}
-	if !strings.Contains(body, "![image](https://karpathytalk.com/uploads/example.png)") {
+	if !strings.Contains(body, "![image](https://devsocial.app/uploads/example.png)") {
 		t.Fatalf("post markdown missing absolutized body url: %q", body)
 	}
 }
 
 func TestHandleUserMarkdown(t *testing.T) {
 	app := newTestApp(t)
-	app.BaseURL = "https://karpathytalk.com"
+	app.BaseURL = "https://devsocial.app"
 
 	user, err := app.UpsertUser(1, "author", "Author", "https://example.com/a.png")
 	if err != nil {
@@ -111,7 +111,7 @@ func TestHandleUserMarkdown(t *testing.T) {
 
 func TestAPIPostsQuery(t *testing.T) {
 	app := newTestApp(t)
-	app.BaseURL = "https://karpathytalk.com"
+	app.BaseURL = "https://devsocial.app"
 
 	author, err := app.UpsertUser(1, "author", "Author", "https://example.com/a.png")
 	if err != nil {
@@ -196,7 +196,7 @@ func TestAPIPostsQuery(t *testing.T) {
 
 func TestAPIPostAbsolutizesRelativeMarkdownURLs(t *testing.T) {
 	app := newTestApp(t)
-	app.BaseURL = "https://karpathytalk.com"
+	app.BaseURL = "https://devsocial.app"
 
 	author, err := app.UpsertUser(1, "author", "Author", "https://example.com/a.png")
 	if err != nil {
@@ -231,10 +231,10 @@ func TestAPIPostAbsolutizesRelativeMarkdownURLs(t *testing.T) {
 	if strings.Contains(resp.Post.ContentMarkdown, "]: /uploads/") {
 		t.Fatalf("content_markdown still contains relative reference url: %q", resp.Post.ContentMarkdown)
 	}
-	if !strings.Contains(resp.Post.ContentMarkdown, "](https://karpathytalk.com/uploads/example.png)") {
+	if !strings.Contains(resp.Post.ContentMarkdown, "](https://devsocial.app/uploads/example.png)") {
 		t.Fatalf("content_markdown missing absolutized inline url: %q", resp.Post.ContentMarkdown)
 	}
-	if !strings.Contains(resp.Post.ContentMarkdown, "[ref]: https://karpathytalk.com/uploads/other.png") {
+	if !strings.Contains(resp.Post.ContentMarkdown, "[ref]: https://devsocial.app/uploads/other.png") {
 		t.Fatalf("content_markdown missing absolutized reference url: %q", resp.Post.ContentMarkdown)
 	}
 }

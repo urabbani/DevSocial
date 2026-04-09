@@ -9,7 +9,7 @@ import (
 func newTestApp(t *testing.T) *App {
 	t.Helper()
 
-	dbPath := filepath.Join(t.TempDir(), "karpathytalk-test.db")
+	dbPath := filepath.Join(t.TempDir(), "devsocial-test.db")
 	db, err := InitDB(dbPath)
 	if err != nil {
 		t.Fatalf("InitDB: %v", err)

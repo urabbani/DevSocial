@@ -96,9 +96,9 @@ func (app *App) handleUserRSS(w http.ResponseWriter, r *http.Request) {
 		Version: "2.0",
 		AtomNS:  "http://www.w3.org/2005/Atom",
 		Channel: rssChannel{
-			Title:         fmt.Sprintf("@%s on KarpathyTalk", profile.Username),
+			Title:         fmt.Sprintf("@%s on DevSocial", profile.Username),
 			Link:          profileURL,
-			Description:   fmt.Sprintf("Recent posts by @%s on KarpathyTalk", profile.Username),
+			Description:   fmt.Sprintf("Recent posts by @%s on DevSocial", profile.Username),
 			Language:      "en-us",
 			LastBuildDate: lastBuildDate.Format(time.RFC1123Z),
 			AtomLink: rssAtomLink{

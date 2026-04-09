@@ -57,7 +57,7 @@ func (app *App) handleTimeline(w http.ResponseWriter, r *http.Request) {
 
 	data := &PageData{
 		CurrentUser: user,
-		Title:       "KarpathyTalk",
+		Title:       "DevSocial",
 		ActiveTab:   activeTab,
 	}
 

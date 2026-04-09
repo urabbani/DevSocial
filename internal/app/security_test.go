@@ -8,7 +8,7 @@ import (
 )
 
 func TestWithCSRFSetsCookieOnGet(t *testing.T) {
-	app := &App{BaseURL: "https://karpathytalk.com"}
+	app := &App{BaseURL: "https://devsocial.app"}
 	handler := app.withCSRF(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))

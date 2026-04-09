@@ -10,7 +10,7 @@ import (
 
 func TestHandleUserRSS(t *testing.T) {
 	app := newTestApp(t)
-	app.BaseURL = "https://karpathytalk.com"
+	app.BaseURL = "https://devsocial.app"
 
 	author, err := app.UpsertUser(1, "author", "Author", "https://example.com/a.png")
 	if err != nil {
@@ -39,13 +39,13 @@ func TestHandleUserRSS(t *testing.T) {
 	}
 
 	body := rr.Body.String()
-	if !strings.Contains(body, "<title>@author on KarpathyTalk</title>") {
+	if !strings.Contains(body, "<title>@author on DevSocial</title>") {
 		t.Fatalf("feed body missing channel title: %q", body)
 	}
-	if !strings.Contains(body, "<link>https://karpathytalk.com/user/author</link>") {
+	if !strings.Contains(body, "<link>https://devsocial.app/user/author</link>") {
 		t.Fatalf("feed body missing profile link: %q", body)
 	}
-	if !strings.Contains(body, `href="https://karpathytalk.com/user/author/feed.xml"`) {
+	if !strings.Contains(body, `href="https://devsocial.app/user/author/feed.xml"`) {
 		t.Fatalf("feed body missing self link: %q", body)
 	}
 	if strings.Count(body, "<item>") != 1 {
@@ -54,7 +54,7 @@ func TestHandleUserRSS(t *testing.T) {
 	if !strings.Contains(body, "<title>Top level post</title>") {
 		t.Fatalf("feed body missing item title: %q", body)
 	}
-	if !strings.Contains(body, fmt.Sprintf("<link>https://karpathytalk.com/posts/%d</link>", postID)) {
+	if !strings.Contains(body, fmt.Sprintf("<link>https://devsocial.app/posts/%d</link>", postID)) {
 		t.Fatalf("feed body missing post link: %q", body)
 	}
 	if !strings.Contains(body, "<description><![CDATA[<p>Top level post</p>\n]]></description>") {

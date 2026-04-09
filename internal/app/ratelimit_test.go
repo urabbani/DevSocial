@@ -47,7 +47,7 @@ func TestWithRateLimitReturns429ForAPI(t *testing.T) {
 	}))
 
 	for i := 0; i < 60; i++ {
-		req := httptest.NewRequest(http.MethodGet, "/api/users/karpathy/posts", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/users/devuser/posts", nil)
 		req.RemoteAddr = "203.0.113.10:1234"
 		rr := httptest.NewRecorder()
 		handler.ServeHTTP(rr, req)
@@ -56,7 +56,7 @@ func TestWithRateLimitReturns429ForAPI(t *testing.T) {
 		}
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/users/karpathy/posts", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/users/devuser/posts", nil)
 	req.RemoteAddr = "203.0.113.10:1234"
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)

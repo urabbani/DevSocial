@@ -227,7 +227,7 @@ function syncWelcomeBanner() {
     if (!banner) return;
     var dismissed = false;
     try {
-        dismissed = window.localStorage.getItem('kt-welcome-banner-dismissed') === '1';
+        dismissed = window.localStorage.getItem('ds-welcome-banner-dismissed') === '1';
     } catch (e) {
     }
     banner.hidden = dismissed;
@@ -287,7 +287,7 @@ document.addEventListener('click', function(e) {
             banner.hidden = true;
         }
         try {
-            window.localStorage.setItem('kt-welcome-banner-dismissed', '1');
+            window.localStorage.setItem('ds-welcome-banner-dismissed', '1');
         } catch (err) {
         }
         return;

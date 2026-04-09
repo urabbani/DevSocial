@@ -1,15 +1,15 @@
 services:
-  karpathytalk:
+  devsocial:
     build: .
-    container_name: karpathytalk
+    container_name: devsocial
     restart: unless-stopped
     ports:
       - "8888:8888"
     volumes:
-      - karpathytalk-data:/data
+      - devsocial-data:/data
       - ./uploads:/app/uploads
     env_file:
       - .env
 
 volumes:
-  karpathytalk-data:
+  devsocial-data:
