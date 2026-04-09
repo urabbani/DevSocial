@@ -1,0 +1,15 @@
+services:
+  karpathytalk:
+    build: .
+    container_name: karpathytalk
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+    volumes:
+      - karpathytalk-data:/data
+      - ./uploads:/app/uploads
+    env_file:
+      - .env
+
+volumes:
+  karpathytalk-data:

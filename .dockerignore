@@ -1,0 +1,6 @@
+*.db
+karpathytalk
+.env
+.git
+*.tar.gz
+uploads/*
