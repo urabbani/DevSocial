@@ -1,72 +1,104 @@
 package app
 
 import (
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
+	"path/filepath"
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-var errPostUnchanged = errors.New("post unchanged")
-
-const maxReplyTreeDepth = 50
-
-type PostQuery struct {
-	AuthorID     *int64
-	HasParent    *bool
-	ParentPostID *int64
-	BeforeID     int64
-	Limit        int
-}
-
-func InitDB(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(wal)&_pragma=foreign_keys(1)")
+// InitDB connects to PostgreSQL and runs migrations.
+func InitDB(dsn string) (*sql.DB, error) {
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
-	db.SetMaxOpenConns(1) // SQLite doesn't handle concurrent writes well
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
 
-	schema, err := os.ReadFile(projectPath("schema.sql"))
-	if err != nil {
-		return nil, fmt.Errorf("read schema: %w", err)
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("ping db: %w", err)
 	}
-	if _, err := db.Exec(string(schema)); err != nil {
-		return nil, fmt.Errorf("exec schema: %w", err)
+
+	if err := runMigrations(db); err != nil {
+		return nil, fmt.Errorf("migrations: %w", err)
 	}
 
 	return db, nil
 }
 
+func runMigrations(db *sql.DB) error {
+	migrationsDir := projectPath("internal/database/migrations")
+	entries, err := os.ReadDir(migrationsDir)
+	if err != nil {
+		return fmt.Errorf("read migrations dir: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			continue
+		}
+		path := filepath.Join(migrationsDir, entry.Name())
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", entry.Name(), err)
+		}
+		if _, err := db.Exec(string(content)); err != nil {
+			// PostgreSQL handles idempotency via IF NOT EXISTS / CREATE EXTENSION IF NOT EXISTS
+			// For tables, we check if they already exist
+			if !strings.Contains(err.Error(), "already exists") {
+				return fmt.Errorf("exec migration %s: %w", entry.Name(), err)
+			}
+		}
+	}
+	return nil
+}
+
 // --- Users ---
 
 func (app *App) UpsertUser(githubID int64, username, displayName, avatarURL string) (*User, error) {
-	_, err := app.DB.Exec(`
+	u := &User{}
+	err := app.DB.QueryRow(`
 		INSERT INTO users (github_id, username, display_name, avatar_url)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(github_id) DO UPDATE SET
-			username = excluded.username,
-			display_name = excluded.display_name,
-			avatar_url = excluded.avatar_url
-	`, githubID, username, displayName, avatarURL)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (github_id) DO UPDATE SET
+			username = EXCLUDED.username,
+			display_name = EXCLUDED.display_name,
+			avatar_url = EXCLUDED.avatar_url
+		RETURNING id, github_id, username, display_name, avatar_url, bio, created_at
+	`, githubID, username, displayName, avatarURL).Scan(
+		&u.ID, &u.GitHubID, &u.Username, &u.DisplayName, &u.AvatarURL, &u.Bio, &u.CreatedAt,
+	)
 	if err != nil {
 		return nil, err
 	}
-	return app.GetUserByGitHubID(githubID)
+	return u, nil
 }
 
 func (app *App) GetUserByGitHubID(githubID int64) (*User, error) {
 	u := &User{}
 	err := app.DB.QueryRow(`
 		SELECT id, github_id, username, display_name, avatar_url, bio, created_at
-		FROM users WHERE github_id = ?
+		FROM users WHERE github_id = $1
 	`, githubID).Scan(&u.ID, &u.GitHubID, &u.Username, &u.DisplayName, &u.AvatarURL, &u.Bio, &u.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
+func (app *App) GetUserByID(id int64) (*User, error) {
+	u := &User{}
+	err := app.DB.QueryRow(`
+		SELECT id, github_id, username, display_name, avatar_url, bio, created_at
+		FROM users WHERE id = $1
+	`, id).Scan(&u.ID, &u.GitHubID, &u.Username, &u.DisplayName, &u.AvatarURL, &u.Bio, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +109,7 @@ func (app *App) GetUserByUsername(username string) (*User, error) {
 	u := &User{}
 	err := app.DB.QueryRow(`
 		SELECT id, github_id, username, display_name, avatar_url, bio, created_at
-		FROM users WHERE username = ?
+		FROM users WHERE username = $1
 	`, username).Scan(&u.ID, &u.GitHubID, &u.Username, &u.DisplayName, &u.AvatarURL, &u.Bio, &u.CreatedAt)
 	if err != nil {
 		return nil, err
@@ -85,36 +117,18 @@ func (app *App) GetUserByUsername(username string) (*User, error) {
 	return u, nil
 }
 
-func (app *App) GetUserStats(userID int64) (followers, following, posts int, err error) {
-	err = app.DB.QueryRow(`SELECT COUNT(*) FROM follows WHERE following_id = ?`, userID).Scan(&followers)
-	if err != nil {
-		return
-	}
-	err = app.DB.QueryRow(`SELECT COUNT(*) FROM follows WHERE follower_id = ?`, userID).Scan(&following)
-	if err != nil {
-		return
-	}
-	err = app.DB.QueryRow(`SELECT COUNT(*) FROM posts WHERE author_id = ? AND parent_post_id IS NULL`, userID).Scan(&posts)
-	return
-}
-
 // --- Sessions ---
 
 func (app *App) CreateSession(userID int64) (string, error) {
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	token := hex.EncodeToString(bytes)
-
-	_, err := app.DB.Exec(`
+	var token string
+	err := app.DB.QueryRow(`
 		INSERT INTO sessions (token, user_id, expires_at)
-		VALUES (?, ?, ?)
-	`, token, userID, time.Now().Add(30*24*time.Hour))
+		VALUES (encode(gen_random_bytes(32), 'hex'), $1, $2)
+		RETURNING token
+	`, userID, time.Now().Add(30*24*time.Hour)).Scan(&token)
 	if err != nil {
 		return "", err
 	}
-
 	return token, nil
 }
 
@@ -124,7 +138,7 @@ func (app *App) GetUserBySession(token string) (*User, error) {
 		SELECT u.id, u.github_id, u.username, u.display_name, u.avatar_url, u.bio, u.created_at
 		FROM sessions s
 		JOIN users u ON s.user_id = u.id
-		WHERE s.token = ? AND s.expires_at > ?
+		WHERE s.token = $1 AND s.expires_at > $2
 	`, token, time.Now()).Scan(&u.ID, &u.GitHubID, &u.Username, &u.DisplayName, &u.AvatarURL, &u.Bio, &u.CreatedAt)
 	if err != nil {
 		return nil, err
@@ -133,1188 +147,573 @@ func (app *App) GetUserBySession(token string) (*User, error) {
 }
 
 func (app *App) DeleteSession(token string) error {
-	_, err := app.DB.Exec(`DELETE FROM sessions WHERE token = ?`, token)
+	_, err := app.DB.Exec(`DELETE FROM sessions WHERE token = $1`, token)
 	return err
 }
 
 func (app *App) CleanExpiredSessions() error {
-	_, err := app.DB.Exec(`DELETE FROM sessions WHERE expires_at < ?`, time.Now())
+	_, err := app.DB.Exec(`DELETE FROM sessions WHERE expires_at < $1`, time.Now())
 	return err
 }
 
-// --- Posts ---
+// --- Workspaces ---
 
-func (app *App) CreatePost(authorID int64, content, contentHTML string, parentPostID, parentPostRevisionID, quoteOfID, quoteOfRevisionID *int64) (int64, error) {
-	tx, err := app.DB.Begin()
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-
-	res, err := tx.Exec(`
-		INSERT INTO posts (
-			author_id, content, content_html, parent_post_id, parent_post_revision_id,
-			quote_of_id, quote_of_revision_id, revision_count
-		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 0)
-	`, authorID, content, contentHTML, parentPostID, parentPostRevisionID, quoteOfID, quoteOfRevisionID)
-	if err != nil {
-		return 0, err
-	}
-	postID, err := res.LastInsertId()
-	if err != nil {
-		return 0, err
-	}
-
-	res, err = tx.Exec(`
-		INSERT INTO post_revisions (post_id, revision_number, content, content_html)
-		VALUES (?, 1, ?, ?)
-	`, postID, content, contentHTML)
-	if err != nil {
-		return 0, err
-	}
-	revisionID, err := res.LastInsertId()
-	if err != nil {
-		return 0, err
-	}
-
-	if _, err := tx.Exec(`
-		UPDATE posts
-		SET current_revision_id = ?, revision_count = 1
-		WHERE id = ?
-	`, revisionID, postID); err != nil {
-		return 0, err
-	}
-
-	if parentPostID != nil {
-		if _, err := tx.Exec(`
-			UPDATE posts
-			SET comment_count = comment_count + 1
-			WHERE id = ?
-		`, *parentPostID); err != nil {
-			return 0, err
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return postID, nil
-}
-
-func (app *App) GetPost(id int64) (*Post, error) {
-	p := &Post{}
-	var parentPostID sql.NullInt64
-	var parentPostRevisionID sql.NullInt64
-	var quoteOfID sql.NullInt64
-	var quoteOfRevisionID sql.NullInt64
-	var editedAt sql.NullTime
+func (app *App) CreateWorkspace(name, description, slug string, ownerID int64) (*Workspace, error) {
+	ws := &Workspace{}
 	err := app.DB.QueryRow(`
-		SELECT id, author_id, content, content_html, parent_post_id, parent_post_revision_id,
-			   quote_of_id, quote_of_revision_id,
-			   created_at, edited_at, like_count, repost_count, comment_count,
-			   current_revision_id, revision_count
-		FROM posts WHERE id = ?
-	`, id).Scan(
-		&p.ID, &p.AuthorID, &p.Content, &p.ContentHTML, &parentPostID, &parentPostRevisionID,
-		&quoteOfID, &quoteOfRevisionID,
-		&p.CreatedAt, &editedAt, &p.LikeCount, &p.RepostCount, &p.ReplyCount,
-		&p.CurrentRevisionID, &p.RevisionCount,
-	)
+		INSERT INTO workspaces (name, description, slug)
+		VALUES ($1, $2, $3)
+		RETURNING id, name, description, slug, created_at
+	`, name, description, slug).Scan(&ws.ID, &ws.Name, &ws.Description, &ws.Slug, &ws.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
-	if parentPostID.Valid {
-		p.ParentPostID = &parentPostID.Int64
+
+	// Add owner as member
+	if _, err := app.DB.Exec(`
+		INSERT INTO workspace_members (workspace_id, user_id, role)
+		VALUES ($1, $2, 'owner')
+	`, ws.ID, ownerID); err != nil {
+		return nil, err
 	}
-	if parentPostRevisionID.Valid {
-		p.ParentPostRevisionID = &parentPostRevisionID.Int64
+
+	// Create default channels
+	if _, err := app.DB.Exec(`
+		INSERT INTO channels (workspace_id, name, description, type, position)
+		VALUES ($1, 'general', 'General discussion', 'text', 0),
+		       ($1, 'ai', 'AI assistant', 'ai', 1)
+	`, ws.ID); err != nil {
+		return nil, err
 	}
-	if quoteOfID.Valid {
-		p.QuoteOfID = &quoteOfID.Int64
-	}
-	if quoteOfRevisionID.Valid {
-		p.QuoteOfRevisionID = &quoteOfRevisionID.Int64
-	}
-	if editedAt.Valid {
-		p.EditedAt = &editedAt.Time
-	}
-	p.RevisionID = p.CurrentRevisionID
-	p.RevisionNumber = p.RevisionCount
-	p.RevisionCreatedAt = p.CreatedAt
-	return p, nil
+
+	return ws, nil
 }
 
-func (app *App) GetPostWithAuthor(id int64) (*Post, error) {
-	p, err := app.GetPost(id)
-	if err != nil {
-		return nil, err
-	}
-	p.Author, err = app.getUserByID(p.AuthorID)
-	if err != nil {
-		return nil, err
-	}
-	if p.ParentPostID != nil {
-		parentRevisionID := int64(0)
-		if p.ParentPostRevisionID != nil {
-			parentRevisionID = *p.ParentPostRevisionID
-		}
-		if parentRevisionID > 0 {
-			p.ParentPost, _ = app.GetPostRevisionWithAuthor(*p.ParentPostID, parentRevisionID)
-		} else {
-			p.ParentPost, _ = app.GetPostWithAuthor(*p.ParentPostID)
-		}
-	}
-	if p.QuoteOfID != nil && p.QuoteOfRevisionID != nil {
-		p.QuotedPost, _ = app.GetPostRevisionWithAuthor(*p.QuoteOfID, *p.QuoteOfRevisionID) // ok if quoted post was deleted
-	}
-	return p, nil
-}
-
-func (app *App) GetPostRevisionWithAuthor(postID, revisionID int64) (*Post, error) {
-	p, err := app.GetPostRevisionByID(postID, revisionID)
-	if err != nil {
-		return nil, err
-	}
-	p.Author, err = app.getUserByID(p.AuthorID)
-	if err != nil {
-		return nil, err
-	}
-	if p.ParentPostID != nil {
-		parentRevisionID := int64(0)
-		if p.ParentPostRevisionID != nil {
-			parentRevisionID = *p.ParentPostRevisionID
-		}
-		if parentRevisionID > 0 {
-			p.ParentPost, _ = app.GetPostRevisionWithAuthor(*p.ParentPostID, parentRevisionID)
-		} else {
-			p.ParentPost, _ = app.GetPostWithAuthor(*p.ParentPostID)
-		}
-	}
-	if p.QuoteOfID != nil && p.QuoteOfRevisionID != nil {
-		p.QuotedPost, _ = app.GetPostRevisionWithAuthor(*p.QuoteOfID, *p.QuoteOfRevisionID)
-	}
-	return p, nil
-}
-
-func (app *App) GetPostRevision(postID int64, revisionNumber int) (*Post, error) {
-	p := &Post{}
-	var parentPostID sql.NullInt64
-	var parentPostRevisionID sql.NullInt64
-	var quoteOfID sql.NullInt64
-	var quoteOfRevisionID sql.NullInt64
-	var editedAt sql.NullTime
+func (app *App) GetWorkspace(id int64) (*Workspace, error) {
+	ws := &Workspace{}
 	err := app.DB.QueryRow(`
-		SELECT p.id, p.author_id, pr.content, pr.content_html, p.parent_post_id, p.parent_post_revision_id,
-			   p.quote_of_id, p.quote_of_revision_id,
-			   p.created_at, p.edited_at, p.like_count, p.repost_count, p.comment_count,
-			   pr.id, pr.revision_number, pr.created_at, p.current_revision_id, p.revision_count
-		FROM posts p
-		JOIN post_revisions pr ON pr.post_id = p.id
-		WHERE p.id = ? AND pr.revision_number = ?
-	`, postID, revisionNumber).Scan(
-		&p.ID, &p.AuthorID, &p.Content, &p.ContentHTML, &parentPostID, &parentPostRevisionID,
-		&quoteOfID, &quoteOfRevisionID,
-		&p.CreatedAt, &editedAt, &p.LikeCount, &p.RepostCount, &p.ReplyCount,
-		&p.RevisionID, &p.RevisionNumber, &p.RevisionCreatedAt, &p.CurrentRevisionID, &p.RevisionCount,
-	)
+		SELECT id, name, description, slug, created_at FROM workspaces WHERE id = $1
+	`, id).Scan(&ws.ID, &ws.Name, &ws.Description, &ws.Slug, &ws.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
-	if parentPostID.Valid {
-		p.ParentPostID = &parentPostID.Int64
-	}
-	if parentPostRevisionID.Valid {
-		p.ParentPostRevisionID = &parentPostRevisionID.Int64
-	}
-	if quoteOfID.Valid {
-		p.QuoteOfID = &quoteOfID.Int64
-	}
-	if quoteOfRevisionID.Valid {
-		p.QuoteOfRevisionID = &quoteOfRevisionID.Int64
-	}
-	if editedAt.Valid {
-		p.EditedAt = &editedAt.Time
-	}
-	return p, nil
+	return ws, nil
 }
 
-func (app *App) GetPostRevisionByID(postID, revisionID int64) (*Post, error) {
-	p := &Post{}
-	var parentPostID sql.NullInt64
-	var parentPostRevisionID sql.NullInt64
-	var quoteOfID sql.NullInt64
-	var quoteOfRevisionID sql.NullInt64
-	var editedAt sql.NullTime
+func (app *App) GetWorkspaceBySlug(slug string) (*Workspace, error) {
+	ws := &Workspace{}
 	err := app.DB.QueryRow(`
-		SELECT p.id, p.author_id, pr.content, pr.content_html, p.parent_post_id, p.parent_post_revision_id,
-			   p.quote_of_id, p.quote_of_revision_id,
-			   p.created_at, p.edited_at, p.like_count, p.repost_count, p.comment_count,
-			   pr.id, pr.revision_number, pr.created_at, p.current_revision_id, p.revision_count
-		FROM posts p
-		JOIN post_revisions pr ON pr.post_id = p.id
-		WHERE p.id = ? AND pr.id = ?
-	`, postID, revisionID).Scan(
-		&p.ID, &p.AuthorID, &p.Content, &p.ContentHTML, &parentPostID, &parentPostRevisionID,
-		&quoteOfID, &quoteOfRevisionID,
-		&p.CreatedAt, &editedAt, &p.LikeCount, &p.RepostCount, &p.ReplyCount,
-		&p.RevisionID, &p.RevisionNumber, &p.RevisionCreatedAt, &p.CurrentRevisionID, &p.RevisionCount,
-	)
+		SELECT id, name, description, slug, created_at FROM workspaces WHERE slug = $1
+	`, slug).Scan(&ws.ID, &ws.Name, &ws.Description, &ws.Slug, &ws.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
-	if parentPostID.Valid {
-		p.ParentPostID = &parentPostID.Int64
-	}
-	if parentPostRevisionID.Valid {
-		p.ParentPostRevisionID = &parentPostRevisionID.Int64
-	}
-	if quoteOfID.Valid {
-		p.QuoteOfID = &quoteOfID.Int64
-	}
-	if quoteOfRevisionID.Valid {
-		p.QuoteOfRevisionID = &quoteOfRevisionID.Int64
-	}
-	if editedAt.Valid {
-		p.EditedAt = &editedAt.Time
-	}
-	return p, nil
+	return ws, nil
 }
 
-func (app *App) GetPostRevisions(postID int64) ([]*PostRevision, error) {
+func (app *App) ListUserWorkspaces(userID int64) ([]*Workspace, error) {
 	rows, err := app.DB.Query(`
-		SELECT id, post_id, revision_number, content, content_html, created_at
-		FROM post_revisions
-		WHERE post_id = ?
-		ORDER BY revision_number DESC
-	`, postID)
+		SELECT w.id, w.name, w.description, w.slug, w.created_at,
+		       (SELECT COUNT(*) FROM workspace_members WHERE workspace_id = w.id) as member_count
+		FROM workspaces w
+		JOIN workspace_members wm ON wm.workspace_id = w.id
+		WHERE wm.user_id = $1
+		ORDER BY w.name
+	`, userID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var revisions []*PostRevision
+	var workspaces []*Workspace
 	for rows.Next() {
-		revision := &PostRevision{}
-		if err := rows.Scan(
-			&revision.ID, &revision.PostID, &revision.RevisionNumber,
-			&revision.Content, &revision.ContentHTML, &revision.CreatedAt,
-		); err != nil {
+		ws := &Workspace{IsMember: true}
+		if err := rows.Scan(&ws.ID, &ws.Name, &ws.Description, &ws.Slug, &ws.CreatedAt, &ws.MemberCount); err != nil {
 			return nil, err
 		}
-		revisions = append(revisions, revision)
+		workspaces = append(workspaces, ws)
 	}
-	return revisions, rows.Err()
+	return workspaces, rows.Err()
 }
 
-func (app *App) EditPost(postID, authorID int64, content, contentHTML string) (*PostRevision, error) {
-	tx, err := app.DB.Begin()
-	if err != nil {
-		return nil, err
+func (app *App) UpdateWorkspace(id, userID int64, name, description string) error {
+	// Check ownership
+	var role string
+	if err := app.DB.QueryRow(`
+		SELECT role FROM workspace_members WHERE workspace_id = $1 AND user_id = $2
+	`, id, userID).Scan(&role); err != nil {
+		return fmt.Errorf("not a member of workspace")
 	}
-	defer tx.Rollback()
-
-	var currentContent string
-	var currentRevisionCount int
-	err = tx.QueryRow(`
-		SELECT content, revision_count
-		FROM posts
-		WHERE id = ? AND author_id = ?
-	`, postID, authorID).Scan(&currentContent, &currentRevisionCount)
-	if err != nil {
-		return nil, err
-	}
-	if currentContent == content {
-		return nil, errPostUnchanged
+	if role != "owner" && role != "admin" {
+		return fmt.Errorf("insufficient permissions")
 	}
 
-	nextRevision := currentRevisionCount + 1
-	res, err := tx.Exec(`
-		INSERT INTO post_revisions (post_id, revision_number, content, content_html)
-		VALUES (?, ?, ?, ?)
-	`, postID, nextRevision, content, contentHTML)
-	if err != nil {
-		return nil, err
-	}
-	revisionID, err := res.LastInsertId()
-	if err != nil {
-		return nil, err
-	}
-
-	now := time.Now()
-	if _, err := tx.Exec(`
-		UPDATE posts
-		SET content = ?, content_html = ?, current_revision_id = ?, revision_count = ?, edited_at = ?
-		WHERE id = ?
-	`, content, contentHTML, revisionID, nextRevision, now, postID); err != nil {
-		return nil, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-
-	return &PostRevision{
-		ID:             revisionID,
-		PostID:         postID,
-		RevisionNumber: nextRevision,
-		Content:        content,
-		ContentHTML:    contentHTML,
-		CreatedAt:      now,
-	}, nil
+	_, err := app.DB.Exec(`
+		UPDATE workspaces SET name = $1, description = $2 WHERE id = $3
+	`, name, description, id)
+	return err
 }
 
-func (app *App) getUserByID(id int64) (*User, error) {
-	u := &User{}
-	err := app.DB.QueryRow(`
-		SELECT id, github_id, username, display_name, avatar_url, bio, created_at
-		FROM users WHERE id = ?
-	`, id).Scan(&u.ID, &u.GitHubID, &u.Username, &u.DisplayName, &u.AvatarURL, &u.Bio, &u.CreatedAt)
-	if err != nil {
-		return nil, err
+func (app *App) DeleteWorkspace(id, userID int64) error {
+	var role string
+	if err := app.DB.QueryRow(`
+		SELECT role FROM workspace_members WHERE workspace_id = $1 AND user_id = $2
+	`, id, userID).Scan(&role); err != nil {
+		return fmt.Errorf("not a member of workspace")
 	}
-	return u, nil
+	if role != "owner" {
+		return fmt.Errorf("only owner can delete workspace")
+	}
+
+	_, err := app.DB.Exec(`DELETE FROM workspaces WHERE id = $1`, id)
+	return err
 }
 
-func (app *App) GetTimelinePosts(limit int, beforeID int64) ([]*Post, error) {
-	var rows *sql.Rows
-	var err error
+// --- Workspace Members ---
 
-	if beforeID > 0 {
-		rows, err = app.DB.Query(`
-			SELECT id, author_id, content, content_html, parent_post_id, parent_post_revision_id,
-				   quote_of_id, quote_of_revision_id,
-				   created_at, edited_at, like_count, repost_count, comment_count,
-				   current_revision_id, revision_count
-			FROM posts WHERE parent_post_id IS NULL AND id < ?
-			ORDER BY created_at DESC LIMIT ?
-		`, beforeID, limit)
-	} else {
-		rows, err = app.DB.Query(`
-			SELECT id, author_id, content, content_html, parent_post_id, parent_post_revision_id,
-				   quote_of_id, quote_of_revision_id,
-				   created_at, edited_at, like_count, repost_count, comment_count,
-				   current_revision_id, revision_count
-			FROM posts
-			WHERE parent_post_id IS NULL
-			ORDER BY created_at DESC LIMIT ?
-		`, limit)
+func (app *App) AddWorkspaceMember(workspaceID, userID int64, role string) error {
+	// Check inviter is admin or owner
+	if role != "member" {
+		return fmt.Errorf("can only add members; use UpdateMemberRole for admin/owner")
 	}
+	_, err := app.DB.Exec(`
+		INSERT INTO workspace_members (workspace_id, user_id, role)
+		VALUES ($1, $2, $3)
+		ON CONFLICT DO NOTHING
+	`, workspaceID, userID, role)
+	return err
+}
+
+func (app *App) RemoveWorkspaceMember(workspaceID, targetUserID int64) error {
+	_, err := app.DB.Exec(`
+		DELETE FROM workspace_members WHERE workspace_id = $1 AND user_id = $2
+	`, workspaceID, targetUserID)
+	return err
+}
+
+func (app *App) UpdateMemberRole(workspaceID, targetUserID int64, role string) error {
+	_, err := app.DB.Exec(`
+		UPDATE workspace_members SET role = $1 WHERE workspace_id = $2 AND user_id = $3
+	`, role, workspaceID, targetUserID)
+	return err
+}
+
+func (app *App) ListWorkspaceMembers(workspaceID int64) ([]*WorkspaceMember, error) {
+	rows, err := app.DB.Query(`
+		SELECT wm.user_id, u.username, wm.role, wm.joined_at
+		FROM workspace_members wm
+		JOIN users u ON u.id = wm.user_id
+		WHERE wm.workspace_id = $1
+		ORDER BY wm.joined_at
+	`, workspaceID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	return app.scanPosts(rows)
-}
-
-func (app *App) GetActivityItems(userID int64, limit int, before string) ([]*ActivityItem, string, error) {
-	if limit <= 0 {
-		limit = postsPerPage
-	}
-
-	query := `
-		WITH events AS (
-			SELECT 'reply' AS type, p.author_id AS actor_id, p.created_at AS created_at, p.id AS event_post_id, parent.id AS subject_post_id
-			FROM posts p
-			JOIN posts parent ON p.parent_post_id = parent.id
-			WHERE parent.author_id = ? AND p.author_id != ?
-
-			UNION ALL
-
-			SELECT 'quote' AS type, p.author_id AS actor_id, p.created_at AS created_at, p.id AS event_post_id, quoted.id AS subject_post_id
-			FROM posts p
-			JOIN posts quoted ON p.quote_of_id = quoted.id
-			WHERE quoted.author_id = ? AND p.author_id != ?
-
-			UNION ALL
-
-			SELECT 'repost' AS type, r.user_id AS actor_id, r.created_at AS created_at, NULL AS event_post_id, p.id AS subject_post_id
-			FROM reposts r
-			JOIN posts p ON r.post_id = p.id
-			WHERE p.author_id = ? AND r.user_id != ?
-
-			UNION ALL
-
-			SELECT 'like' AS type, l.user_id AS actor_id, l.created_at AS created_at, NULL AS event_post_id, p.id AS subject_post_id
-			FROM likes l
-			JOIN posts p ON l.post_id = p.id
-			WHERE p.author_id = ? AND l.user_id != ?
-
-			UNION ALL
-
-			SELECT 'follow' AS type, f.follower_id AS actor_id, f.created_at AS created_at, NULL AS event_post_id, NULL AS subject_post_id
-			FROM follows f
-			WHERE f.following_id = ? AND f.follower_id != ?
-		)
-		SELECT type, actor_id, created_at, event_post_id, subject_post_id
-		FROM events
-	`
-	args := []any{userID, userID, userID, userID, userID, userID, userID, userID, userID, userID}
-	if before != "" {
-		query += " WHERE created_at < ?"
-		args = append(args, before)
-	}
-	query += " ORDER BY created_at DESC LIMIT ?"
-	args = append(args, limit)
-
-	rows, err := app.DB.Query(query, args...)
-	if err != nil {
-		return nil, "", err
-	}
-
-	var items []*ActivityItem
-	actorIDs := map[int64]bool{}
-	eventPostIDs := map[int64]bool{}
-	subjectPostIDs := map[int64]bool{}
+	var members []*WorkspaceMember
 	for rows.Next() {
-		item := &ActivityItem{}
-		var eventPostID sql.NullInt64
-		var subjectPostID sql.NullInt64
-		if err := rows.Scan(&item.Type, &item.ActorID, &item.CreatedAt, &eventPostID, &subjectPostID); err != nil {
-			rows.Close()
-			return nil, "", err
+		m := &WorkspaceMember{}
+		if err := rows.Scan(&m.UserID, &m.Username, &m.Role, &m.JoinedAt); err != nil {
+			return nil, err
 		}
-		actorIDs[item.ActorID] = true
-		if eventPostID.Valid {
-			item.EventPostID = &eventPostID.Int64
-			eventPostIDs[eventPostID.Int64] = true
-		}
-		if subjectPostID.Valid {
-			item.SubjectPostID = &subjectPostID.Int64
-			subjectPostIDs[subjectPostID.Int64] = true
-		}
-		items = append(items, item)
+		members = append(members, m)
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, "", err
-	}
-	rows.Close()
-
-	actorCache := map[int64]*User{}
-	for actorID := range actorIDs {
-		if actor, err := app.getUserByID(actorID); err == nil {
-			actorCache[actorID] = actor
-		}
-	}
-
-	postCache := map[int64]*Post{}
-	for postID := range eventPostIDs {
-		if post, err := app.GetPostWithAuthor(postID); err == nil {
-			postCache[postID] = post
-		}
-	}
-	for postID := range subjectPostIDs {
-		if _, ok := postCache[postID]; ok {
-			continue
-		}
-		if post, err := app.GetPostWithAuthor(postID); err == nil {
-			postCache[postID] = post
-		}
-	}
-
-	for _, item := range items {
-		item.Actor = actorCache[item.ActorID]
-		if item.EventPostID != nil {
-			item.EventPost = postCache[*item.EventPostID]
-		}
-		if item.SubjectPostID != nil {
-			item.SubjectPost = postCache[*item.SubjectPostID]
-		}
-	}
-
-	var nextCursor string
-	if len(items) > 0 {
-		nextCursor = items[len(items)-1].CreatedAt.UTC().Format(time.RFC3339Nano)
-	}
-	return items, nextCursor, nil
+	return members, rows.Err()
 }
 
-func (app *App) GetFollowingTimelinePosts(userID int64, limit int, beforeID int64) ([]*Post, error) {
-	var rows *sql.Rows
-	var err error
+func (app *App) IsWorkspaceMember(workspaceID, userID int64) (bool, error) {
+	var count int
+	err := app.DB.QueryRow(`
+		SELECT COUNT(*) FROM workspace_members WHERE workspace_id = $1 AND user_id = $2
+	`, workspaceID, userID).Scan(&count)
+	return count > 0, err
+}
 
-	if beforeID > 0 {
-		rows, err = app.DB.Query(`
-			SELECT id, author_id, content, content_html, parent_post_id, parent_post_revision_id,
-				   quote_of_id, quote_of_revision_id,
-				   created_at, edited_at, like_count, repost_count, comment_count,
-				   current_revision_id, revision_count
-			FROM posts
-			WHERE parent_post_id IS NULL
-			  AND id < ?
-			  AND (
-				author_id = ?
-				OR author_id IN (
-					SELECT following_id FROM follows WHERE follower_id = ?
-				)
-			  )
-			ORDER BY created_at DESC, id DESC LIMIT ?
-		`, beforeID, userID, userID, limit)
-	} else {
-		rows, err = app.DB.Query(`
-			SELECT id, author_id, content, content_html, parent_post_id, parent_post_revision_id,
-				   quote_of_id, quote_of_revision_id,
-				   created_at, edited_at, like_count, repost_count, comment_count,
-				   current_revision_id, revision_count
-			FROM posts
-			WHERE parent_post_id IS NULL
-			  AND (
-				author_id = ?
-				OR author_id IN (
-					SELECT following_id FROM follows WHERE follower_id = ?
-				)
-			  )
-			ORDER BY created_at DESC, id DESC LIMIT ?
-		`, userID, userID, limit)
+func (app *App) GetWorkspaceMemberRole(workspaceID, userID int64) (string, error) {
+	var role string
+	err := app.DB.QueryRow(`
+		SELECT role FROM workspace_members WHERE workspace_id = $1 AND user_id = $2
+	`, workspaceID, userID).Scan(&role)
+	if err != nil {
+		return "", err
 	}
+	return role, nil
+}
+
+// --- Channels ---
+
+func (app *App) CreateChannel(workspaceID int64, name, description, channelType string, position int) (*Channel, error) {
+	ch := &Channel{}
+	err := app.DB.QueryRow(`
+		INSERT INTO channels (workspace_id, name, description, type, position)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, workspace_id, name, description, type, position, created_at
+	`, workspaceID, name, description, channelType, position).Scan(
+		&ch.ID, &ch.WorkspaceID, &ch.Name, &ch.Description, &ch.Type, &ch.Position, &ch.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return ch, nil
+}
+
+func (app *App) GetChannel(id int64) (*Channel, error) {
+	ch := &Channel{}
+	err := app.DB.QueryRow(`
+		SELECT id, workspace_id, name, description, type, position, created_at
+		FROM channels WHERE id = $1
+	`, id).Scan(&ch.ID, &ch.WorkspaceID, &ch.Name, &ch.Description, &ch.Type, &ch.Position, &ch.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return ch, nil
+}
+
+func (app *App) ListWorkspaceChannels(workspaceID int64, userID int64) ([]*Channel, error) {
+	rows, err := app.DB.Query(`
+		SELECT c.id, c.workspace_id, c.name, c.description, c.type, c.position, c.created_at,
+		       COALESCE((SELECT COUNT(*) FROM messages m WHERE m.channel_id = c.id AND m.id > COALESCE(cu.last_read_message_id, 0)), 0) as unread_count
+		FROM channels c
+		LEFT JOIN channel_unreads cu ON cu.channel_id = c.id AND cu.user_id = $2
+		WHERE c.workspace_id = $1
+		ORDER BY c.position
+	`, workspaceID, userID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	return app.scanPosts(rows)
+	var channels []*Channel
+	for rows.Next() {
+		ch := &Channel{}
+		if err := rows.Scan(&ch.ID, &ch.WorkspaceID, &ch.Name, &ch.Description, &ch.Type, &ch.Position, &ch.CreatedAt, &ch.UnreadCount); err != nil {
+			return nil, err
+		}
+		channels = append(channels, ch)
+	}
+	return channels, rows.Err()
 }
 
-func (app *App) GetPosts(query PostQuery) ([]*Post, error) {
-	limit := query.Limit
+func (app *App) UpdateChannel(id int64, name, description string) error {
+	_, err := app.DB.Exec(`
+		UPDATE channels SET name = $1, description = $2 WHERE id = $3
+	`, name, description, id)
+	return err
+}
+
+func (app *App) DeleteChannel(id int64) error {
+	_, err := app.DB.Exec(`DELETE FROM channels WHERE id = $1`, id)
+	return err
+}
+
+// --- Messages ---
+
+func (app *App) CreateMessage(channelID int64, authorID *int64, content, contentHTML string, isAI, isSystem bool) (*Message, error) {
+	msg := &Message{}
+	err := app.DB.QueryRow(`
+		INSERT INTO messages (channel_id, author_id, content, content_html, is_ai, is_system)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, channel_id, author_id, content, content_html, is_ai, is_system, created_at
+	`, channelID, authorID, content, contentHTML, isAI, isSystem).Scan(
+		&msg.ID, &msg.ChannelID, &msg.AuthorID, &msg.Content, &msg.ContentHTML,
+		&msg.IsAI, &msg.IsSystem, &msg.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return msg, nil
+}
+
+func (app *App) GetMessage(id int64) (*Message, error) {
+	msg := &Message{}
+	var authorID sql.NullInt64
+	var editedAt sql.NullTime
+	err := app.DB.QueryRow(`
+		SELECT id, channel_id, author_id, content, content_html, is_ai, is_system, created_at, edited_at
+		FROM messages WHERE id = $1
+	`, id).Scan(&msg.ID, &msg.ChannelID, &authorID, &msg.Content, &msg.ContentHTML,
+		&msg.IsAI, &msg.IsSystem, &msg.CreatedAt, &editedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if authorID.Valid {
+		msg.AuthorID = &authorID.Int64
+	}
+	if editedAt.Valid {
+		msg.EditedAt = &editedAt.Time
+	}
+	return msg, nil
+}
+
+func (app *App) GetMessageWithAuthor(id int64) (*Message, error) {
+	msg, err := app.GetMessage(id)
+	if err != nil {
+		return nil, err
+	}
+	if msg.AuthorID != nil {
+		msg.Author, _ = app.GetUserByID(*msg.AuthorID)
+	}
+	return msg, nil
+}
+
+func (app *App) ListChannelMessages(channelID int64, beforeID int64, limit int) ([]*Message, error) {
 	if limit <= 0 {
-		limit = postsPerPage
-	}
-
-	var conditions []string
-	var args []any
-
-	if query.AuthorID != nil {
-		conditions = append(conditions, "author_id = ?")
-		args = append(args, *query.AuthorID)
-	}
-	if query.ParentPostID != nil {
-		conditions = append(conditions, "parent_post_id = ?")
-		args = append(args, *query.ParentPostID)
-	} else if query.HasParent != nil {
-		if *query.HasParent {
-			conditions = append(conditions, "parent_post_id IS NOT NULL")
-		} else {
-			conditions = append(conditions, "parent_post_id IS NULL")
-		}
-	}
-	if query.BeforeID > 0 {
-		conditions = append(conditions, "id < ?")
-		args = append(args, query.BeforeID)
-	}
-
-	baseQuery := `
-		SELECT id, author_id, content, content_html, parent_post_id, parent_post_revision_id,
-			   quote_of_id, quote_of_revision_id,
-			   created_at, edited_at, like_count, repost_count, comment_count,
-			   current_revision_id, revision_count
-		FROM posts
-	`
-	if len(conditions) > 0 {
-		baseQuery += " WHERE " + strings.Join(conditions, " AND ")
-	}
-	baseQuery += " ORDER BY created_at DESC, id DESC LIMIT ?"
-	args = append(args, limit)
-
-	rows, err := app.DB.Query(baseQuery, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	return app.scanPosts(rows)
-}
-
-func clampPostsQueryLimit(limitValue string, fallback int) (int, bool) {
-	if limitValue == "" {
-		return fallback, true
-	}
-	limit, err := strconv.Atoi(limitValue)
-	if err != nil || limit < 1 {
-		return 0, false
+		limit = 50
 	}
 	if limit > 100 {
 		limit = 100
 	}
-	return limit, true
-}
 
-func (app *App) GetUserPosts(userID int64, limit int, beforeID int64) ([]*Post, error) {
 	var rows *sql.Rows
 	var err error
-
 	if beforeID > 0 {
 		rows, err = app.DB.Query(`
-			SELECT id, author_id, content, content_html, parent_post_id, parent_post_revision_id,
-				   quote_of_id, quote_of_revision_id,
-				   created_at, edited_at, like_count, repost_count, comment_count,
-				   current_revision_id, revision_count
-			FROM posts WHERE author_id = ? AND parent_post_id IS NULL AND id < ?
-			ORDER BY created_at DESC LIMIT ?
-		`, userID, beforeID, limit)
+			SELECT id, channel_id, author_id, content, content_html, is_ai, is_system, created_at, edited_at
+			FROM messages
+			WHERE channel_id = $1 AND id < $2
+			ORDER BY created_at DESC, id DESC
+			LIMIT $3
+		`, channelID, beforeID, limit)
 	} else {
 		rows, err = app.DB.Query(`
-			SELECT id, author_id, content, content_html, parent_post_id, parent_post_revision_id,
-				   quote_of_id, quote_of_revision_id,
-				   created_at, edited_at, like_count, repost_count, comment_count,
-				   current_revision_id, revision_count
-			FROM posts WHERE author_id = ? AND parent_post_id IS NULL
-			ORDER BY created_at DESC LIMIT ?
-		`, userID, limit)
+			SELECT id, channel_id, author_id, content, content_html, is_ai, is_system, created_at, edited_at
+			FROM messages
+			WHERE channel_id = $1
+			ORDER BY created_at DESC, id DESC
+			LIMIT $3
+		`, channelID, limit)
 	}
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	return app.scanPosts(rows)
+	return app.scanMessages(rows)
 }
 
-func (app *App) GetUserReplies(userID int64, limit int, beforeID int64) ([]*Post, error) {
-	var rows *sql.Rows
-	var err error
-
-	if beforeID > 0 {
-		rows, err = app.DB.Query(`
-			SELECT id, author_id, content, content_html, parent_post_id, parent_post_revision_id,
-				   quote_of_id, quote_of_revision_id,
-				   created_at, edited_at, like_count, repost_count, comment_count,
-				   current_revision_id, revision_count
-			FROM posts WHERE author_id = ? AND parent_post_id IS NOT NULL AND id < ?
-			ORDER BY created_at DESC LIMIT ?
-		`, userID, beforeID, limit)
-	} else {
-		rows, err = app.DB.Query(`
-			SELECT id, author_id, content, content_html, parent_post_id, parent_post_revision_id,
-				   quote_of_id, quote_of_revision_id,
-				   created_at, edited_at, like_count, repost_count, comment_count,
-				   current_revision_id, revision_count
-			FROM posts WHERE author_id = ? AND parent_post_id IS NOT NULL
-			ORDER BY created_at DESC LIMIT ?
-		`, userID, limit)
-	}
+func (app *App) ListChannelMessagesWithAuthors(channelID int64, beforeID int64, limit int) ([]*Message, error) {
+	messages, err := app.ListChannelMessages(channelID, beforeID, limit)
 	if err != nil {
 		return nil, err
-	}
-	defer rows.Close()
-
-	return app.scanPosts(rows)
-}
-
-func (app *App) scanPosts(rows *sql.Rows) ([]*Post, error) {
-	var posts []*Post
-	for rows.Next() {
-		p := &Post{}
-		var parentPostID sql.NullInt64
-		var parentPostRevisionID sql.NullInt64
-		var quoteOfID sql.NullInt64
-		var quoteOfRevisionID sql.NullInt64
-		var editedAt sql.NullTime
-		err := rows.Scan(
-			&p.ID, &p.AuthorID, &p.Content, &p.ContentHTML, &parentPostID, &parentPostRevisionID,
-			&quoteOfID, &quoteOfRevisionID,
-			&p.CreatedAt, &editedAt, &p.LikeCount, &p.RepostCount, &p.ReplyCount,
-			&p.CurrentRevisionID, &p.RevisionCount,
-		)
-		if err != nil {
-			return nil, err
-		}
-		if parentPostID.Valid {
-			p.ParentPostID = &parentPostID.Int64
-		}
-		if parentPostRevisionID.Valid {
-			p.ParentPostRevisionID = &parentPostRevisionID.Int64
-		}
-		if quoteOfID.Valid {
-			p.QuoteOfID = &quoteOfID.Int64
-		}
-		if quoteOfRevisionID.Valid {
-			p.QuoteOfRevisionID = &quoteOfRevisionID.Int64
-		}
-		if editedAt.Valid {
-			p.EditedAt = &editedAt.Time
-		}
-		p.RevisionID = p.CurrentRevisionID
-		p.RevisionNumber = p.RevisionCount
-		p.RevisionCreatedAt = p.CreatedAt
-		posts = append(posts, p)
-	}
-	return posts, rows.Err()
-}
-
-// HydratePosts fills in Author, QuotedPost, and current user state for a list of posts.
-func (app *App) HydratePosts(posts []*Post, currentUserID int64) error {
-	if len(posts) == 0 {
-		return nil
-	}
-
-	// Collect unique author IDs and post IDs
-	authorIDs := map[int64]bool{}
-	postIDs := make([]int64, len(posts))
-	for i, p := range posts {
-		authorIDs[p.AuthorID] = true
-		postIDs[i] = p.ID
 	}
 
 	// Batch load authors
-	userCache := map[int64]*User{}
+	authorIDs := map[int64]bool{}
+	for _, m := range messages {
+		if m.AuthorID != nil {
+			authorIDs[*m.AuthorID] = true
+		}
+	}
+	authorCache := map[int64]*User{}
 	for id := range authorIDs {
-		u, err := app.getUserByID(id)
-		if err != nil {
-			return err
+		if u, err := app.GetUserByID(id); err == nil {
+			authorCache[id] = u
 		}
-		userCache[id] = u
 	}
-
-	// Load current user's likes, reposts, and bookmarks
-	likedSet := map[int64]bool{}
-	repostedSet := map[int64]bool{}
-	bookmarkedSet := map[int64]bool{}
-	if currentUserID > 0 {
-		placeholders := make([]string, len(postIDs))
-		args := make([]interface{}, len(postIDs)+1)
-		args[0] = currentUserID
-		for i, id := range postIDs {
-			placeholders[i] = "?"
-			args[i+1] = id
-		}
-		ph := strings.Join(placeholders, ",")
-
-		rows, err := app.DB.Query(
-			`SELECT post_id FROM likes WHERE user_id = ? AND post_id IN (`+ph+`)`, args...)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var pid int64
-			rows.Scan(&pid)
-			likedSet[pid] = true
-		}
-		rows.Close()
-
-		rows, err = app.DB.Query(
-			`SELECT post_id FROM reposts WHERE user_id = ? AND post_id IN (`+ph+`)`, args...)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var pid int64
-			rows.Scan(&pid)
-			repostedSet[pid] = true
-		}
-		rows.Close()
-
-		rows, err = app.DB.Query(
-			`SELECT post_id FROM bookmarks WHERE user_id = ? AND post_id IN (`+ph+`)`, args...)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var pid int64
-			rows.Scan(&pid)
-			bookmarkedSet[pid] = true
-		}
-		rows.Close()
-	}
-
-	// Assign to posts
-	for _, p := range posts {
-		p.Author = userCache[p.AuthorID]
-		p.IsLiked = likedSet[p.ID]
-		p.IsReposted = repostedSet[p.ID]
-		p.IsBookmarked = bookmarkedSet[p.ID]
-
-		if p.ParentPostID != nil {
-			if p.ParentPostRevisionID != nil {
-				p.ParentPost, _ = app.GetPostRevisionWithAuthor(*p.ParentPostID, *p.ParentPostRevisionID)
-			} else {
-				p.ParentPost, _ = app.GetPostWithAuthor(*p.ParentPostID)
-			}
-		}
-		if p.QuoteOfID != nil && p.QuoteOfRevisionID != nil {
-			p.QuotedPost, _ = app.GetPostRevisionWithAuthor(*p.QuoteOfID, *p.QuoteOfRevisionID)
+	for _, m := range messages {
+		if m.AuthorID != nil {
+			m.Author = authorCache[*m.AuthorID]
 		}
 	}
 
-	return nil
+	// Reverse to chronological order
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
+	}
+
+	return messages, nil
 }
 
-func (app *App) DeletePost(postID, authorID int64) error {
-	tx, err := app.DB.Begin()
+func (app *App) ListMessageReplies(messageID int64) ([]*Message, error) {
+	rows, err := app.DB.Query(`
+		SELECT id, channel_id, author_id, content, content_html, is_ai, is_system, created_at, edited_at
+		FROM messages
+		WHERE parent_message_id = $1
+		ORDER BY created_at ASC
+	`, messageID)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer tx.Rollback()
+	defer rows.Close()
 
-	var parentPostID sql.NullInt64
-	if err := tx.QueryRow(`SELECT parent_post_id FROM posts WHERE id = ? AND author_id = ?`, postID, authorID).Scan(&parentPostID); err != nil {
-		if err == sql.ErrNoRows {
-			return fmt.Errorf("post not found or not owned by user")
-		}
-		return err
-	}
+	return app.scanMessages(rows)
+}
 
-	res, err := tx.Exec(`DELETE FROM posts WHERE id = ? AND author_id = ?`, postID, authorID)
+func (app *App) EditMessage(id, userID int64, content, contentHTML string) error {
+	res, err := app.DB.Exec(`
+		UPDATE messages SET content = $1, content_html = $2, edited_at = $3
+		WHERE id = $4 AND author_id = $5
+	`, content, contentHTML, time.Now(), id, userID)
 	if err != nil {
 		return err
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("post not found or not owned by user")
+		return errors.New("message not found or not owned by user")
 	}
-	if parentPostID.Valid {
-		if _, err := tx.Exec(`UPDATE posts SET comment_count = MAX(0, comment_count - 1) WHERE id = ?`, parentPostID.Int64); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+	return nil
 }
 
-func (app *App) GetReplies(postID int64) ([]*Post, error) {
+func (app *App) DeleteMessage(id, userID int64) error {
+	res, err := app.DB.Exec(`
+		DELETE FROM messages WHERE id = $1 AND author_id = $2
+	`, id, userID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return errors.New("message not found or not owned by user")
+	}
+	return nil
+}
+
+func (app *App) ToggleReaction(messageID, userID int64, reaction string) error {
+	var count int
+	err := app.DB.QueryRow(`
+		SELECT COUNT(*) FROM message_reactions WHERE message_id = $1 AND user_id = $2 AND reaction = $3
+	`, messageID, userID, reaction).Scan(&count)
+	if err != nil {
+		return err
+	}
+
+	if count > 0 {
+		_, err = app.DB.Exec(`
+			DELETE FROM message_reactions WHERE message_id = $1 AND user_id = $2 AND reaction = $3
+		`, messageID, userID, reaction)
+	} else {
+		_, err = app.DB.Exec(`
+			INSERT INTO message_reactions (message_id, user_id, reaction) VALUES ($1, $2, $3)
+		`, messageID, userID, reaction)
+	}
+	return err
+}
+
+func (app *App) GetMessageReactions(messageID int64) ([]Reaction, error) {
 	rows, err := app.DB.Query(`
-		WITH RECURSIVE reply_tree AS (
-			SELECT id, author_id, content, content_html, parent_post_id, parent_post_revision_id,
-				   quote_of_id, quote_of_revision_id, created_at, edited_at,
-				   like_count, repost_count, comment_count, current_revision_id, revision_count, 0 AS depth
-			FROM posts
-			WHERE parent_post_id = ?
-			UNION ALL
-			SELECT p.id, p.author_id, p.content, p.content_html, p.parent_post_id, p.parent_post_revision_id,
-				   p.quote_of_id, p.quote_of_revision_id, p.created_at, p.edited_at,
-				   p.like_count, p.repost_count, p.comment_count, p.current_revision_id, p.revision_count, rt.depth + 1
-			FROM posts p
-			JOIN reply_tree rt ON p.parent_post_id = rt.id
-			WHERE rt.depth < ?
-		)
-		SELECT id, author_id, content, content_html, parent_post_id, parent_post_revision_id,
-			   quote_of_id, quote_of_revision_id, created_at, edited_at,
-			   like_count, repost_count, comment_count, current_revision_id, revision_count, depth
-		FROM reply_tree
-		ORDER BY created_at ASC, id ASC
-	`, postID, maxReplyTreeDepth)
+		SELECT mr.user_id, u.username, mr.reaction, mr.created_at
+		FROM message_reactions mr
+		JOIN users u ON u.id = mr.user_id
+		WHERE mr.message_id = $1
+		ORDER BY mr.created_at
+	`, messageID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var replies []*Post
+	var reactions []Reaction
 	for rows.Next() {
-		reply := &Post{}
-		var parentPostID sql.NullInt64
-		var parentPostRevisionID sql.NullInt64
-		var quoteOfID sql.NullInt64
-		var quoteOfRevisionID sql.NullInt64
-		var editedAt sql.NullTime
-		if err := rows.Scan(
-			&reply.ID, &reply.AuthorID, &reply.Content, &reply.ContentHTML, &parentPostID, &parentPostRevisionID,
-			&quoteOfID, &quoteOfRevisionID, &reply.CreatedAt, &editedAt,
-			&reply.LikeCount, &reply.RepostCount, &reply.ReplyCount, &reply.CurrentRevisionID, &reply.RevisionCount, &reply.Depth,
-		); err != nil {
+		r := Reaction{}
+		if err := rows.Scan(&r.UserID, &r.Username, &r.Reaction, &r.CreatedAt); err != nil {
 			return nil, err
 		}
-		if parentPostID.Valid {
-			reply.ParentPostID = &parentPostID.Int64
-		}
-		if parentPostRevisionID.Valid {
-			reply.ParentPostRevisionID = &parentPostRevisionID.Int64
-		}
-		if quoteOfID.Valid {
-			reply.QuoteOfID = &quoteOfID.Int64
-		}
-		if quoteOfRevisionID.Valid {
-			reply.QuoteOfRevisionID = &quoteOfRevisionID.Int64
-		}
-		if editedAt.Valid {
-			reply.EditedAt = &editedAt.Time
-		}
-		reply.RevisionID = reply.CurrentRevisionID
-		reply.RevisionNumber = reply.RevisionCount
-		reply.RevisionCreatedAt = reply.CreatedAt
-		replies = append(replies, reply)
+		reactions = append(reactions, r)
 	}
-	return replies, rows.Err()
+	return reactions, rows.Err()
 }
 
-// --- Likes ---
-
-func (app *App) ToggleLike(userID, postID int64) (liked bool, err error) {
-	tx, err := app.DB.Begin()
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-
-	var count int
-	err = tx.QueryRow(`SELECT COUNT(*) FROM likes WHERE user_id = ? AND post_id = ?`,
-		userID, postID).Scan(&count)
-	if err != nil {
-		return false, err
-	}
-
-	if count > 0 {
-		if _, err = tx.Exec(`DELETE FROM likes WHERE user_id = ? AND post_id = ?`, userID, postID); err != nil {
-			return false, err
-		}
-		if _, err = tx.Exec(`UPDATE posts SET like_count = MAX(0, like_count - 1) WHERE id = ?`, postID); err != nil {
-			return false, err
-		}
-		return false, tx.Commit()
-	}
-
-	if _, err = tx.Exec(`INSERT INTO likes (user_id, post_id) VALUES (?, ?)`, userID, postID); err != nil {
-		return false, err
-	}
-	if _, err = tx.Exec(`UPDATE posts SET like_count = like_count + 1 WHERE id = ?`, postID); err != nil {
-		return false, err
-	}
-	return true, tx.Commit()
-}
-
-// --- Reposts ---
-
-func (app *App) ToggleRepost(userID, postID, postRevisionID int64) (reposted bool, err error) {
-	tx, err := app.DB.Begin()
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-
-	var count int
-	err = tx.QueryRow(`SELECT COUNT(*) FROM reposts WHERE user_id = ? AND post_id = ?`,
-		userID, postID).Scan(&count)
-	if err != nil {
-		return false, err
-	}
-
-	if count > 0 {
-		if _, err = tx.Exec(`DELETE FROM reposts WHERE user_id = ? AND post_id = ?`, userID, postID); err != nil {
-			return false, err
-		}
-		if _, err = tx.Exec(`UPDATE posts SET repost_count = MAX(0, repost_count - 1) WHERE id = ?`, postID); err != nil {
-			return false, err
-		}
-		return false, tx.Commit()
-	}
-
-	if _, err = tx.Exec(`INSERT INTO reposts (user_id, post_id, post_revision_id) VALUES (?, ?, ?)`,
-		userID, postID, postRevisionID); err != nil {
-		return false, err
-	}
-	if _, err = tx.Exec(`UPDATE posts SET repost_count = repost_count + 1 WHERE id = ?`, postID); err != nil {
-		return false, err
-	}
-	return true, tx.Commit()
-}
-
-// --- Bookmarks ---
-
-func (app *App) ToggleBookmark(userID, postID int64) (bookmarked bool, err error) {
-	tx, err := app.DB.Begin()
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback()
-
-	var count int
-	err = tx.QueryRow(`SELECT COUNT(*) FROM bookmarks WHERE user_id = ? AND post_id = ?`,
-		userID, postID).Scan(&count)
-	if err != nil {
-		return false, err
-	}
-
-	if count > 0 {
-		if _, err = tx.Exec(`DELETE FROM bookmarks WHERE user_id = ? AND post_id = ?`, userID, postID); err != nil {
-			return false, err
-		}
-		return false, tx.Commit()
-	}
-
-	if _, err = tx.Exec(`INSERT INTO bookmarks (user_id, post_id) VALUES (?, ?)`, userID, postID); err != nil {
-		return false, err
-	}
-	return true, tx.Commit()
-}
-
-// GetBookmarkedPosts returns bookmarks ordered by bookmark time.
-// Cursor format: "created_at,post_id" for stable keyset pagination.
-func (app *App) GetBookmarkedPosts(userID int64, limit int, beforeCursor string) ([]*Post, string, error) {
-	var rows *sql.Rows
-	var err error
-
-	if beforeCursor != "" {
-		parts := strings.SplitN(beforeCursor, ",", 2)
-		if len(parts) != 2 {
-			return nil, "", fmt.Errorf("invalid cursor")
-		}
-		cursorTime, cursorPostID := parts[0], parts[1]
-		rows, err = app.DB.Query(`
-			SELECT p.id, p.author_id, p.content, p.content_html, p.parent_post_id, p.parent_post_revision_id,
-				   p.quote_of_id, p.quote_of_revision_id,
-				   p.created_at, p.edited_at, p.like_count, p.repost_count, p.comment_count,
-				   p.current_revision_id, p.revision_count, b.created_at, b.post_id
-			FROM bookmarks b
-			JOIN posts p ON b.post_id = p.id
-			WHERE b.user_id = ?
-			  AND (b.created_at < ? OR (b.created_at = ? AND b.post_id < ?))
-			ORDER BY b.created_at DESC, b.post_id DESC LIMIT ?
-		`, userID, cursorTime, cursorTime, cursorPostID, limit)
-	} else {
-		rows, err = app.DB.Query(`
-			SELECT p.id, p.author_id, p.content, p.content_html, p.parent_post_id, p.parent_post_revision_id,
-				   p.quote_of_id, p.quote_of_revision_id,
-				   p.created_at, p.edited_at, p.like_count, p.repost_count, p.comment_count,
-				   p.current_revision_id, p.revision_count, b.created_at, b.post_id
-			FROM bookmarks b
-			JOIN posts p ON b.post_id = p.id
-			WHERE b.user_id = ?
-			ORDER BY b.created_at DESC, b.post_id DESC LIMIT ?
-		`, userID, limit)
-	}
-	if err != nil {
-		return nil, "", err
-	}
-	defer rows.Close()
-
-	type bookmarkRow struct {
-		post         *Post
-		bookmarkTime string
-		bookmarkPID  int64
-	}
-	var results []bookmarkRow
-	for rows.Next() {
-		p := &Post{}
-		var parentPostID sql.NullInt64
-		var parentPostRevisionID sql.NullInt64
-		var quoteOfID sql.NullInt64
-		var quoteOfRevisionID sql.NullInt64
-		var editedAt sql.NullTime
-		var bTime string
-		var bPID int64
-		err := rows.Scan(
-			&p.ID, &p.AuthorID, &p.Content, &p.ContentHTML, &parentPostID, &parentPostRevisionID,
-			&quoteOfID, &quoteOfRevisionID,
-			&p.CreatedAt, &editedAt, &p.LikeCount, &p.RepostCount, &p.ReplyCount,
-			&p.CurrentRevisionID, &p.RevisionCount, &bTime, &bPID,
-		)
-		if err != nil {
-			return nil, "", err
-		}
-		if parentPostID.Valid {
-			p.ParentPostID = &parentPostID.Int64
-		}
-		if parentPostRevisionID.Valid {
-			p.ParentPostRevisionID = &parentPostRevisionID.Int64
-		}
-		if quoteOfID.Valid {
-			p.QuoteOfID = &quoteOfID.Int64
-		}
-		if quoteOfRevisionID.Valid {
-			p.QuoteOfRevisionID = &quoteOfRevisionID.Int64
-		}
-		if editedAt.Valid {
-			p.EditedAt = &editedAt.Time
-		}
-		p.RevisionID = p.CurrentRevisionID
-		p.RevisionNumber = p.RevisionCount
-		p.RevisionCreatedAt = p.CreatedAt
-		results = append(results, bookmarkRow{post: p, bookmarkTime: bTime, bookmarkPID: bPID})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, "", err
-	}
-
-	posts := make([]*Post, len(results))
-	for i, r := range results {
-		posts[i] = r.post
-	}
-
-	// Cursor comes from the last row the caller will actually display (index limit-2),
-	// not from the overflow sentinel row.
-	var nextCursor string
-	if len(results) >= limit && limit > 1 {
-		last := results[limit-2] // last visible row
-		nextCursor = fmt.Sprintf("%s,%d", last.bookmarkTime, last.bookmarkPID)
-	}
-	return posts, nextCursor, nil
-}
-
-// --- Follows ---
-
-func (app *App) ToggleFollow(followerID, followingID int64) (following bool, err error) {
-	if followerID == followingID {
-		return false, fmt.Errorf("cannot follow yourself")
-	}
-
-	var count int
-	err = app.DB.QueryRow(`SELECT COUNT(*) FROM follows WHERE follower_id = ? AND following_id = ?`,
-		followerID, followingID).Scan(&count)
-	if err != nil {
-		return false, err
-	}
-
-	if count > 0 {
-		_, err = app.DB.Exec(`DELETE FROM follows WHERE follower_id = ? AND following_id = ?`,
-			followerID, followingID)
-		return false, err
-	}
-
-	_, err = app.DB.Exec(`INSERT INTO follows (follower_id, following_id) VALUES (?, ?)`,
-		followerID, followingID)
-	return true, err
-}
-
-func (app *App) IsFollowing(followerID, followingID int64) bool {
-	var count int
-	app.DB.QueryRow(`SELECT COUNT(*) FROM follows WHERE follower_id = ? AND following_id = ?`,
-		followerID, followingID).Scan(&count)
-	return count > 0
-}
-
-func (app *App) GetRepostRevisionID(userID, postID int64) (int64, error) {
-	var revisionID sql.NullInt64
-	err := app.DB.QueryRow(`
-		SELECT post_revision_id
-		FROM reposts
-		WHERE user_id = ? AND post_id = ?
-	`, userID, postID).Scan(&revisionID)
-	if err != nil {
-		return 0, err
-	}
-	if !revisionID.Valid {
-		return 0, sql.ErrNoRows
-	}
-	return revisionID.Int64, nil
-}
-
-// --- Rate Limiting Queries ---
-
-func (app *App) CountRecentPosts(userID int64, since time.Time) (int, error) {
-	var count int
-	err := app.DB.QueryRow(`SELECT COUNT(*) FROM posts WHERE author_id = ? AND parent_post_id IS NULL AND created_at > ?`,
-		userID, since).Scan(&count)
-	return count, err
-}
-
-func (app *App) CountRecentReplies(userID int64, since time.Time) (int, error) {
-	var count int
-	err := app.DB.QueryRow(`SELECT COUNT(*) FROM posts WHERE author_id = ? AND parent_post_id IS NOT NULL AND created_at > ?`,
-		userID, since).Scan(&count)
-	return count, err
-}
-
-// --- Uploads ---
-
-func (app *App) RecordUpload(userID int64, filename string, sizeBytes int64) error {
-	_, err := app.DB.Exec(`INSERT INTO uploads (user_id, filename, size_bytes) VALUES (?, ?, ?)`,
-		userID, filename, sizeBytes)
+func (app *App) UpdateChannelUnread(channelID, userID int64, lastMessageID int64) error {
+	_, err := app.DB.Exec(`
+		INSERT INTO channel_unreads (user_id, channel_id, last_read_message_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (user_id, channel_id) DO UPDATE SET last_read_message_id = $3
+	`, userID, channelID, lastMessageID)
 	return err
 }
 
-func (app *App) CountRecentUploads(userID int64, since time.Time) (int, error) {
-	var count int
-	err := app.DB.QueryRow(`SELECT COUNT(*) FROM uploads WHERE user_id = ? AND created_at > ?`,
-		userID, since).Scan(&count)
-	return count, err
+// --- AI Agents ---
+
+func (app *App) CreateAIAgent(workspaceID int64, name, agentType, systemPrompt string) (*AIAgent, error) {
+	agent := &AIAgent{}
+	err := app.DB.QueryRow(`
+		INSERT INTO ai_agents (workspace_id, name, type, system_prompt)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, workspace_id, name, type, system_prompt, enabled, created_at
+	`, workspaceID, name, agentType, systemPrompt).Scan(
+		&agent.ID, &agent.WorkspaceID, &agent.Name, &agent.Type, &agent.SystemPrompt,
+		&agent.Enabled, &agent.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return agent, nil
+}
+
+func (app *App) GetAIAgent(id int64) (*AIAgent, error) {
+	agent := &AIAgent{}
+	err := app.DB.QueryRow(`
+		SELECT id, workspace_id, name, type, system_prompt, enabled, created_at
+		FROM ai_agents WHERE id = $1
+	`, id).Scan(&agent.ID, &agent.WorkspaceID, &agent.Name, &agent.Type, &agent.SystemPrompt,
+		&agent.Enabled, &agent.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return agent, nil
+}
+
+func (app *App) ListWorkspaceAgents(workspaceID int64) ([]*AIAgent, error) {
+	rows, err := app.DB.Query(`
+		SELECT id, workspace_id, name, type, system_prompt, enabled, created_at
+		FROM ai_agents
+		WHERE workspace_id = $1
+		ORDER BY name
+	`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var agents []*AIAgent
+	for rows.Next() {
+		agent := &AIAgent{}
+		if err := rows.Scan(&agent.ID, &agent.WorkspaceID, &agent.Name, &agent.Type, &agent.SystemPrompt,
+			&agent.Enabled, &agent.CreatedAt); err != nil {
+			return nil, err
+		}
+		agents = append(agents, agent)
+	}
+	return agents, rows.Err()
+}
+
+func (app *App) UpdateAIAgent(id int64, systemPrompt string, enabled bool) error {
+	_, err := app.DB.Exec(`
+		UPDATE ai_agents SET system_prompt = $1, enabled = $2 WHERE id = $3
+	`, systemPrompt, enabled, id)
+	return err
+}
+
+// --- Helpers ---
+
+func (app *App) scanMessages(rows *sql.Rows) ([]*Message, error) {
+	var messages []*Message
+	for rows.Next() {
+		msg := &Message{}
+		var authorID sql.NullInt64
+		var editedAt sql.NullTime
+		if err := rows.Scan(&msg.ID, &msg.ChannelID, &authorID, &msg.Content, &msg.ContentHTML,
+			&msg.IsAI, &msg.IsSystem, &msg.CreatedAt, &editedAt); err != nil {
+			return nil, err
+		}
+		if authorID.Valid {
+			msg.AuthorID = &authorID.Int64
+		}
+		if editedAt.Valid {
+			msg.EditedAt = &editedAt.Time
+		}
+		messages = append(messages, msg)
+	}
+	return messages, rows.Err()
+}
+
+func buildPlaceholders(n int) string {
+	placeholders := make([]string, n)
+	for i := range placeholders {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+	}
+	return strings.Join(placeholders, ",")
 }

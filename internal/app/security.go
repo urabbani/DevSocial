@@ -10,12 +10,7 @@ import (
 
 const csrfCookieName = "csrf_token"
 
-type contextKey string
-
-const (
-	userContextKey contextKey = "user"
-	csrfContextKey contextKey = "csrf"
-)
+const csrfContextKey contextKey = "csrf"
 
 func generateToken(size int) (string, error) {
 	bytes := make([]byte, size)
@@ -108,9 +103,5 @@ func (app *App) validCSRF(r *http.Request, token string) bool {
 }
 
 func (app *App) renderCSRFError(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("HX-Request") == "true" || strings.HasPrefix(r.URL.Path, "/api/") {
-		http.Error(w, "Invalid CSRF token.", http.StatusForbidden)
-		return
-	}
-	app.renderStatus(w, r, http.StatusForbidden, "Forbidden", "Invalid CSRF token.")
+	http.Error(w, "Invalid CSRF token.", http.StatusForbidden)
 }

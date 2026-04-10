@@ -2,100 +2,88 @@ package app
 
 import "time"
 
+// --- User & Auth ---
+
 type User struct {
-	ID          int64
-	GitHubID    int64
-	Username    string
-	DisplayName string
-	AvatarURL   string
-	Bio         string
-	CreatedAt   time.Time
-	// Computed fields (filled by queries as needed)
-	FollowerCount  int
-	FollowingCount int
-	PostCount      int
-	IsFollowing    bool // whether current user follows this user
+	ID          int64     `json:"id"`
+	GitHubID    int64     `json:"github_id"`
+	Username    string    `json:"username"`
+	DisplayName string    `json:"display_name"`
+	AvatarURL   string    `json:"avatar_url"`
+	Bio         string    `json:"bio,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
-type PostRevision struct {
-	ID             int64
-	PostID         int64
-	RevisionNumber int
-	Content        string
-	ContentHTML    string
-	CreatedAt      time.Time
+// --- Workspace ---
+
+type Workspace struct {
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Slug        string    `json:"slug"`
+	CreatedAt   time.Time `json:"created_at"`
+	// Computed
+	MemberCount int  `json:"member_count"`
+	IsMember    bool `json:"is_member"`
 }
 
-type Post struct {
-	ID                   int64
-	AuthorID             int64
-	Content              string
-	ContentHTML          string
-	ParentPostID         *int64
-	ParentPostRevisionID *int64
-	QuoteOfID            *int64
-	QuoteOfRevisionID    *int64
-	CreatedAt            time.Time
-	EditedAt             *time.Time
-	LikeCount            int
-	RepostCount          int
-	ReplyCount           int
-	RevisionID           int64
-	RevisionNumber       int
-	RevisionCreatedAt    time.Time
-	CurrentRevisionID    int64
-	RevisionCount        int
-	Depth                int
+// --- Channel ---
+
+type Channel struct {
+	ID          int64     `json:"id"`
+	WorkspaceID int64     `json:"workspace_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Type        string    `json:"type"` // "text" or "ai"
+	Position    int       `json:"position"`
+	CreatedAt   time.Time `json:"created_at"`
+	// Computed
+	UnreadCount int `json:"unread_count"`
+}
+
+// --- Message ---
+
+type Message struct {
+	ID               int64      `json:"id"`
+	ChannelID        int64      `json:"channel_id"`
+	AuthorID         *int64     `json:"author_id,omitempty"`
+	ParentMessageID  *int64     `json:"parent_message_id,omitempty"`
+	Content          string     `json:"content"`
+	ContentHTML      string     `json:"content_html,omitempty"`
+	IsAI             bool       `json:"is_ai"`
+	IsSystem         bool       `json:"is_system"`
+	CreatedAt        time.Time  `json:"created_at"`
+	EditedAt         *time.Time `json:"edited_at,omitempty"`
 	// Joined fields
-	Author     *User
-	ParentPost *Post
-	QuotedPost *Post
-	// Current user state
-	IsLiked                    bool
-	IsReposted                 bool
-	IsBookmarked               bool
-	ViewerRepostRevisionID     int64
-	ViewerRepostRevisionNumber int
-	// Timeline annotation
-	RepostedBy *User
+	Author    *User    `json:"author,omitempty"`
+	Reactions []Reaction `json:"reactions,omitempty"`
+	Replies   []*Message `json:"replies,omitempty"`
 }
 
-type ActivityItem struct {
-	Type          string
-	ActorID       int64
-	Actor         *User
-	CreatedAt     time.Time
-	EventPostID   *int64
-	SubjectPostID *int64
-	EventPost     *Post
-	SubjectPost   *Post
+type Reaction struct {
+	UserID    int64     `json:"user_id"`
+	Username  string    `json:"username"`
+	Reaction  string    `json:"reaction"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
-type PageData struct {
-	CurrentUser  *User
-	Title        string
-	BodyClass    string
-	StatusCode   int
-	ErrorTitle   string
-	ErrorMessage string
-	Posts        []*Post
-	Post         *Post
-	Replies      []*Post
-	Revisions    []*PostRevision
-	Profile      *User
-	QuotePost    *Post
-	ParentPost   *Post
-	NextCursor   int64
-	HasMore      bool
-	LoadMoreURL  string
-	Error        string
-	Flash        string
-	FormAction   string
-	SubmitLabel  string
-	CancelURL    string
-	IsEditing    bool
-	ActiveTab    string
-	DocsHTML     string
-	DocsMarkdown string
-	Activity     []*ActivityItem
+// --- AI Agent ---
+
+type AIAgent struct {
+	ID           int64     `json:"id"`
+	WorkspaceID  int64     `json:"workspace_id"`
+	Name         string    `json:"name"`
+	Type         string    `json:"type"`
+	SystemPrompt string    `json:"system_prompt"`
+	Enabled      bool      `json:"enabled"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// --- Workspace Member ---
+
+type WorkspaceMember struct {
+	UserID    int64     `json:"user_id"`
+	Username  string    `json:"username"`
+	Role      string    `json:"role"`
+	JoinedAt  time.Time `json:"joined_at"`
 }

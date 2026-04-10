@@ -2,8 +2,13 @@ package app
 
 import (
 	"database/sql"
-	"html/template"
+	"log"
 	"net/http"
+	"os"
+
+	"devsocial/internal/claw"
+	"devsocial/internal/ws"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 type App struct {
@@ -11,20 +16,38 @@ type App struct {
 	GitHubClientID     string
 	GitHubClientSecret string
 	BaseURL            string
-	Templates          map[string]*template.Template
 	RateLimiter        *IPRateLimiter
+	Hub                *ws.Hub
+	Claw               *claw.Manager
 }
 
 func New(db *sql.DB, githubClientID, githubClientSecret, baseURL string) *App {
+	binPath := os.Getenv("CLAW_BIN_PATH")
+	if binPath == "" {
+		binPath = claw.FindBinary()
+	}
+	dataDir := os.Getenv("CLAW_DATA_DIR")
+	if dataDir == "" {
+		dataDir = "./data"
+	}
+
 	app := &App{
 		DB:                 db,
 		GitHubClientID:     githubClientID,
 		GitHubClientSecret: githubClientSecret,
 		BaseURL:            baseURL,
-		Templates:          LoadTemplates(),
 		RateLimiter:        NewIPRateLimiter(),
+		Hub:                ws.NewHub(),
+		Claw:               claw.NewManager(binPath, dataDir),
 	}
-	app.startTrendingRebuilder()
+
+	if claw.IsAvailable(binPath) {
+		log.Printf("claw-code found at %s", binPath)
+	} else {
+		log.Printf("claw-code not found at %s — AI features disabled", binPath)
+	}
+
+	go app.Hub.Run()
 	return app
 }
 
@@ -35,50 +58,73 @@ func (app *App) Handler() http.Handler {
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir(projectPath("static")))))
 	mux.Handle("GET /uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(projectPath("uploads")))))
 
+	// React app — serve index.html for all non-API routes
+	mux.HandleFunc("GET /", app.serveReactApp)
+
 	// Auth
-	mux.HandleFunc("GET /login", app.handleLogin)
 	mux.HandleFunc("GET /auth/github", app.handleGitHubAuth)
 	mux.HandleFunc("GET /auth/callback", app.handleGitHubCallback)
-	mux.HandleFunc("POST /auth/logout", app.handleLogout)
+	mux.HandleFunc("POST /auth/logout", app.requireAuth(app.handleLogout))
 
-	// Timeline
-	mux.HandleFunc("GET /", app.handleTimeline)
+	// Current user
+	mux.HandleFunc("GET /api/me", app.requireAuth(app.handleGetMe))
 
-	// Docs + read API
-	mux.HandleFunc("GET /docs", app.handleDocs)
-	mux.HandleFunc("GET /docs.md", app.handleDocsRaw)
-	mux.HandleFunc("GET /user/{username}/md", app.handleUserMarkdown)
-	mux.HandleFunc("GET /api/posts", app.handleAPIPosts)
-	mux.HandleFunc("GET /api/users/{username}", app.handleAPIUser)
-	mux.HandleFunc("GET /api/posts/{id}", app.handleAPIPost)
+	// WebSocket
+	mux.HandleFunc("GET /ws", app.requireAuth(app.handleWebSocket))
 
-	// Posts
-	mux.HandleFunc("GET /compose", app.requireAuth(app.handleCompose))
-	mux.HandleFunc("POST /posts", app.requireAuth(app.handleCreatePost))
-	mux.HandleFunc("GET /posts/{id}", app.handleViewPost)
-	mux.HandleFunc("GET /posts/{id}/md", app.handlePostMarkdown)
-	mux.HandleFunc("GET /posts/{id}/edit", app.requireAuth(app.handleEditPostForm))
-	mux.HandleFunc("POST /posts/{id}/edit", app.requireAuth(app.handleEditPost))
-	mux.HandleFunc("GET /posts/{id}/revisions", app.handlePostRevisions)
-	mux.HandleFunc("GET /posts/{id}/revisions/{revision}", app.handleViewPostRevision)
-	mux.HandleFunc("POST /posts/{id}/delete", app.requireAuth(app.handleDeletePost))
-	mux.HandleFunc("GET /posts/{id}/raw", app.handlePostRaw)
-	mux.HandleFunc("POST /posts/{id}/like", app.requireAuth(app.handleToggleLike))
-	mux.HandleFunc("POST /posts/{id}/repost", app.requireAuth(app.handleToggleRepost))
-	mux.HandleFunc("POST /posts/{id}/bookmark", app.requireAuth(app.handleToggleBookmark))
-	mux.HandleFunc("GET /bookmarks", app.requireAuth(app.handleBookmarks))
+	// Workspaces
+	mux.HandleFunc("GET /api/workspaces", app.requireAuth(app.handleListWorkspaces))
+	mux.HandleFunc("POST /api/workspaces", app.requireAuth(app.handleCreateWorkspace))
+	mux.HandleFunc("GET /api/workspaces/{id}", app.requireAuth(app.handleGetWorkspace))
+	mux.HandleFunc("PATCH /api/workspaces/{id}", app.requireAuth(app.handleUpdateWorkspace))
+	mux.HandleFunc("DELETE /api/workspaces/{id}", app.requireAuth(app.handleDeleteWorkspace))
 
-	// Replies
-	mux.HandleFunc("POST /posts/{id}/reply", app.requireAuth(app.handleCreateReply))
+	// Workspace members
+	mux.HandleFunc("GET /api/workspaces/{id}/members", app.requireAuth(app.handleListMembers))
+	mux.HandleFunc("POST /api/workspaces/{id}/members", app.requireAuth(app.handleAddMember))
+	mux.HandleFunc("DELETE /api/workspaces/{id}/members/{uid}", app.requireAuth(app.handleRemoveMember))
 
-	// Upload + preview
+	// Channels
+	mux.HandleFunc("GET /api/workspaces/{id}/channels", app.requireAuth(app.handleListChannels))
+	mux.HandleFunc("POST /api/workspaces/{id}/channels", app.requireAuth(app.handleCreateChannel))
+	mux.HandleFunc("GET /api/channels/{id}", app.requireAuth(app.handleGetChannel))
+	mux.HandleFunc("PATCH /api/channels/{id}", app.requireAuth(app.handleUpdateChannel))
+	mux.HandleFunc("DELETE /api/channels/{id}", app.requireAuth(app.handleDeleteChannel))
+
+	// Messages
+	mux.HandleFunc("GET /api/channels/{id}/messages", app.requireAuth(app.handleListMessages))
+	mux.HandleFunc("POST /api/channels/{id}/messages", app.requireAuth(app.handleCreateMessage))
+	mux.HandleFunc("GET /api/messages/{id}", app.requireAuth(app.handleGetMessage))
+	mux.HandleFunc("PATCH /api/messages/{id}", app.requireAuth(app.handleEditMessage))
+	mux.HandleFunc("DELETE /api/messages/{id}", app.requireAuth(app.handleDeleteMessage))
+
+	// Reactions
+	mux.HandleFunc("POST /api/messages/{id}/reactions", app.requireAuth(app.handleToggleReaction))
+
+	// AI Agents
+	mux.HandleFunc("GET /api/workspaces/{id}/agents", app.requireAuth(app.handleListAgents))
+	mux.HandleFunc("POST /api/workspaces/{id}/agents", app.requireAuth(app.handleCreateAgent))
+	mux.HandleFunc("PATCH /api/agents/{id}", app.requireAuth(app.handleUpdateAgent))
+
+	// Upload
 	mux.HandleFunc("POST /upload", app.requireAuth(app.handleUpload))
-	mux.HandleFunc("POST /preview", app.requireAuth(app.handlePreview))
 
-	// Profile + follow
-	mux.HandleFunc("GET /user/{username}/feed.xml", app.handleUserRSS)
-	mux.HandleFunc("GET /user/{username}", app.handleProfile)
-	mux.HandleFunc("POST /user/{username}/follow", app.requireAuth(app.handleToggleFollow))
+	return app.withSecurityHeaders(app.withUser(app.withRateLimit(mux)))
+}
 
-	return app.withSecurityHeaders(app.withUser(app.withRateLimit(app.withCSRF(mux))))
+func (app *App) serveReactApp(w http.ResponseWriter, r *http.Request) {
+	// Serve the React SPA for all non-API, non-static routes
+	// The React app handles client-side routing
+	http.ServeFile(w, r, projectPath("web/dist/index.html"))
+}
+
+func (app *App) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user := UserFromContext(r)
+		if user == nil {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
 }

@@ -12,16 +12,7 @@ import (
 	"time"
 )
 
-func (app *App) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if GetCurrentUser(r) != nil {
-		http.Redirect(w, r, "/", http.StatusFound)
-		return
-	}
-	app.render(w, "login.html", &PageData{Title: "Sign In"})
-}
-
 func (app *App) handleGitHubAuth(w http.ResponseWriter, r *http.Request) {
-	// Generate random state to prevent CSRF
 	stateBytes := make([]byte, 16)
 	rand.Read(stateBytes)
 	state := hex.EncodeToString(stateBytes)
@@ -33,7 +24,7 @@ func (app *App) handleGitHubAuth(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		Secure:   strings.HasPrefix(app.BaseURL, "https"),
-		MaxAge:   600, // 10 minutes
+		MaxAge:   600,
 	})
 
 	redirectURL := fmt.Sprintf(
@@ -46,13 +37,11 @@ func (app *App) handleGitHubAuth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *App) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
-	// Verify CSRF state
 	stateCookie, err := r.Cookie("oauth_state")
 	if err != nil || stateCookie.Value == "" {
-		app.renderStatus(w, r, http.StatusBadRequest, "Bad Request", "Missing OAuth state.")
+		http.Redirect(w, r, "/?error=missing_state", http.StatusFound)
 		return
 	}
-	// Clear the state cookie
 	http.SetCookie(w, &http.Cookie{
 		Name:     "oauth_state",
 		Value:    "",
@@ -61,41 +50,37 @@ func (app *App) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 	})
 	if r.URL.Query().Get("state") != stateCookie.Value {
-		app.renderStatus(w, r, http.StatusBadRequest, "Bad Request", "Invalid OAuth state.")
+		http.Redirect(w, r, "/?error=invalid_state", http.StatusFound)
 		return
 	}
 
 	code := r.URL.Query().Get("code")
 	if code == "" {
-		app.renderStatus(w, r, http.StatusBadRequest, "Bad Request", "Missing code parameter.")
+		http.Redirect(w, r, "/?error=missing_code", http.StatusFound)
 		return
 	}
 
-	// Exchange code for access token
 	token, err := app.exchangeGitHubCode(code)
 	if err != nil {
-		app.renderStatus(w, r, http.StatusInternalServerError, "Authentication Error", "Failed to authenticate with GitHub.")
+		http.Redirect(w, r, "/?error=auth_failed", http.StatusFound)
 		return
 	}
 
-	// Get user info from GitHub
 	ghUser, err := app.getGitHubUser(token)
 	if err != nil {
-		app.renderStatus(w, r, http.StatusInternalServerError, "Authentication Error", "Failed to get GitHub user info.")
+		http.Redirect(w, r, "/?error=user_info_failed", http.StatusFound)
 		return
 	}
 
-	// Upsert user in our DB
 	user, err := app.UpsertUser(ghUser.ID, ghUser.Login, ghUser.Name, ghUser.AvatarURL)
 	if err != nil {
-		app.renderStatus(w, r, http.StatusInternalServerError, "Authentication Error", "Failed to create user.")
+		http.Redirect(w, r, "/?error=user_create_failed", http.StatusFound)
 		return
 	}
 
-	// Create session
 	sessionToken, err := app.CreateSession(user.ID)
 	if err != nil {
-		app.renderStatus(w, r, http.StatusInternalServerError, "Authentication Error", "Failed to create session.")
+		http.Redirect(w, r, "/?error=session_failed", http.StatusFound)
 		return
 	}
 
@@ -106,7 +91,7 @@ func (app *App) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		Secure:   strings.HasPrefix(app.BaseURL, "https"),
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   30 * 24 * 60 * 60, // 30 days
+		MaxAge:   30 * 24 * 60 * 60,
 	})
 
 	http.Redirect(w, r, "/", http.StatusFound)
@@ -117,7 +102,6 @@ func (app *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		app.DeleteSession(cookie.Value)
 	}
-
 	http.SetCookie(w, &http.Cookie{
 		Name:     "session",
 		Value:    "",
@@ -126,8 +110,7 @@ func (app *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 		Secure:   strings.HasPrefix(app.BaseURL, "https"),
 		MaxAge:   -1,
 	})
-
-	http.Redirect(w, r, "/", http.StatusFound)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "logged_out"})
 }
 
 // --- GitHub API helpers ---

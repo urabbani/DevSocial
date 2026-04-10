@@ -1,15 +1,45 @@
 services:
-  devsocial:
+  postgres:
+    image: postgres:16-alpine
+    container_name: devsocial-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: devsocial
+      POSTGRES_USER: devsocial
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-devsocial}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U devsocial"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
     build: .
     container_name: devsocial
     restart: unless-stopped
     ports:
-      - "8888:8888"
+      - "${APP_PORT:-8888}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://devsocial:${DB_PASSWORD:-devsocial}@postgres:5432/devsocial?sslmode=disable
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
+      BASE_URL: ${BASE_URL:-http://localhost:8888}
+      CLAW_BIN_PATH: ${CLAW_BIN_PATH:-/usr/local/bin/claw}
+      CLAW_DATA_DIR: /data
     volumes:
       - devsocial-data:/data
-      - ./uploads:/app/uploads
+      - uploads-data:/app/uploads
     env_file:
       - .env
 
 volumes:
+  postgres-data:
   devsocial-data:
+  uploads-data:
