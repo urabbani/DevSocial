@@ -50,7 +50,7 @@ export function useWebSocket() {
       reconnectDelay.current = 2000;
       reconnectAttempts.current = 0;
       const channels = useWorkspaceStore.getState().channels || [];
-      if (channels.length > 0 {
+      if (channels.length > 0) {
         ws.send(JSON.stringify({
           type: 'subscribe',
           channel_ids: channels.map((c) => c.id),
