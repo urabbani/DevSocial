@@ -4,7 +4,6 @@ import { useAuthStore } from '../../stores/auth';
 import type { CodeDocument } from '../../api/client';
 
 interface FileTreeProps {
-  workspaceId: number;
   onDocumentSelect: (doc: CodeDocument) => void;
   onNewDocument: () => void;
   activeDocumentId: number | null;
@@ -38,7 +37,6 @@ const LANGUAGE_ICONS: Record<string, string> = {
 };
 
 export function FileTree({
-  workspaceId,
   onDocumentSelect,
   onNewDocument,
   activeDocumentId,

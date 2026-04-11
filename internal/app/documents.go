@@ -2,6 +2,7 @@ package app
 
 import (
 	"devsocial/internal/ai"
+	"fmt"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -13,54 +14,47 @@ import (
 // --- Document Models ---
 
 type CodeDocument struct {
-	ID          int64      `json:"id"`
-	WorkspaceID int64      `json:"workspace_id"`
-	Title       string     `json:"title"`
-	Filename    string     `json:"filename"`
-	Language    string     `json:"language"`
-	Content     string     `json:"content"`
-	Version     int        `json:"version"`
-	CreatedBy   int64      `json:"created_by"`
-	CreatedAt   time.Time  `json:"created_at"`
-	LastEditedBy *int64    `json:"last_edited_by,omitempty"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-	// Joined
-	CreatedByName string `json:"created_by_name,omitempty"`
-	LastEditedByName string `json:"last_edited_by_name,omitempty"`
+	ID              int64     `json:"id"`
+	WorkspaceID     int64     `json:"workspace_id"`
+	Title           string    `json:"title"`
+	Filename        string    `json:"filename"`
+	Language        string    `json:"language"`
+	Content         string    `json:"content"`
+	Version         int       `json:"version"`
+	CreatedBy       int64     `json:"created_by"`
+	CreatedAt       time.Time `json:"created_at"`
+	LastEditedBy    *int64    `json:"last_edited_by,omitempty"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	CreatedByName   string    `json:"created_by_name,omitempty"`
+	LastEditedByName string  `json:"last_edited_by_name,omitempty"`
 }
 
-type CodeDocumentInput struct {
-	Title    string `json:"title"`
-	Filename string `json:"filename"`
-	Language string `json:"language"`
-	Content  string `json:"content"`
-}
-
-type CodeDocumentUpdate struct {
-	Title    *string `json:"title"`
-	Content  *string `json:"content"`
-	Language *string `json:"language"`
-	Version  int     `json:"version"`
-}
-
+const maxDocumentContent = 1_000_000 // 1MB limit
 
 // --- Document Handlers ---
 
 func (app *App) handleListDocuments(w http.ResponseWriter, r *http.Request) {
+	user := UserFromContext(r)
 	workspaceID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid workspace id")
 		return
 	}
+	if ok, _ := app.IsWorkspaceMember(workspaceID, user.ID); !ok {
+		writeError(w, http.StatusForbidden, "not a member of this workspace")
+		return
+	}
 
-	q := `SELECT d.id, d.workspace_id, d.title, d.filename, d.language, d.content, d.version,
+	// Exclude content column from list for performance, add limit
+	q := `SELECT d.id, d.workspace_id, d.title, d.filename, d.language, '' as content, d.version,
 	             d.created_by, d.last_edited_by, d.created_at, d.updated_at,
 	             cu.username, COALESCE(leu.username, '')
 	      FROM code_documents d
 	      JOIN users cu ON cu.id = d.created_by
 	      LEFT JOIN users leu ON leu.id = d.last_edited_by
 	      WHERE d.workspace_id = $1
-	      ORDER BY d.updated_at DESC`
+	      ORDER BY d.updated_at DESC
+	      LIMIT 200`
 
 	docs, err := app.scanDocuments(q, workspaceID)
 	if err != nil {
@@ -85,18 +79,30 @@ func (app *App) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var input CodeDocumentInput
+	var input struct {
+		Title    string `json:"title"`
+		Filename string `json:"filename"`
+		Language string `json:"language"`
+		Content  string `json:"content"`
+	}
 	if err := readJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	// Auto-detect language from filename if not provided
-	if input.Language == "" && input.Filename != "" {
-		input.Language = detectLanguage(input.Filename)
+	// Input validation
+	if input.Filename == "" {
+		writeError(w, http.StatusBadRequest, "filename is required")
+		return
 	}
+	if len(input.Content) > maxDocumentContent {
+		writeError(w, http.StatusBadRequest, "content too large (max 1MB)")
+		return
+	}
+
+	// Auto-detect language from filename if not provided
 	if input.Language == "" {
-		input.Language = "text"
+		input.Language = detectLanguage(input.Filename)
 	}
 
 	// Set default title from filename if not provided
@@ -129,6 +135,7 @@ func (app *App) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 }
 
 func (app *App) handleGetDocument(w http.ResponseWriter, r *http.Request) {
+	user := UserFromContext(r)
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid document id")
@@ -148,33 +155,53 @@ func (app *App) handleGetDocument(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "document not found")
 		return
 	}
+
+	// Authorization: check workspace membership
+	if ok, _ := app.IsWorkspaceMember(docs[0].WorkspaceID, user.ID); !ok {
+		writeError(w, http.StatusForbidden, "not a member of this workspace")
+		return
+	}
+
 	writeJSON(w, http.StatusOK, docs[0])
 }
 
 func (app *App) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 	user := UserFromContext(r)
-	if user == nil {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid document id")
 		return
 	}
 
-	var input CodeDocumentUpdate
+	var input struct {
+		Title    *string `json:"title"`
+		Content  *string `json:"content"`
+		Language *string `json:"language"`
+		Version  int     `json:"version"`
+	}
 	if err := readJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	// Check if document exists and get current version
+	// Validate content length
+	if input.Content != nil && len(*input.Content) > maxDocumentContent {
+		writeError(w, http.StatusBadRequest, "content too large (max 1MB)")
+		return
+	}
+
+	// Check if document exists, get current version + workspace for auth
 	var currentVersion int
-	err = app.DB.QueryRow("SELECT version FROM code_documents WHERE id = $1", id).Scan(&currentVersion)
+	var wsID int64
+	err = app.DB.QueryRow("SELECT version, workspace_id FROM code_documents WHERE id = $1", id).Scan(&currentVersion, &wsID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "document not found")
+		return
+	}
+
+	// Authorization: check workspace membership
+	if ok, _ := app.IsWorkspaceMember(wsID, user.ID); !ok {
+		writeError(w, http.StatusForbidden, "not a member of this workspace")
 		return
 	}
 
@@ -194,7 +221,6 @@ func (app *App) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 		    last_edited_by = $4,
 		    updated_at = $5
 		WHERE id = $6 AND version = $7
-		RETURNING id, workspace_id, title, filename, language, content, version, created_by, last_edited_by, created_at, updated_at
 	`, input.Title, input.Content, input.Language, user.ID, now, id, currentVersion)
 
 	if err != nil {
@@ -232,25 +258,25 @@ func (app *App) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 
 func (app *App) handleDeleteDocument(w http.ResponseWriter, r *http.Request) {
 	user := UserFromContext(r)
-	if user == nil {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid document id")
 		return
 	}
 
-	// Check if user owns the document
-	var createdBy int64
-	err = app.DB.QueryRow("SELECT created_by FROM code_documents WHERE id = $1", id).Scan(&createdBy)
+	// Get document info for authorization
+	var createdBy, wsID int64
+	err = app.DB.QueryRow("SELECT created_by, workspace_id FROM code_documents WHERE id = $1", id).Scan(&createdBy, &wsID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "document not found")
 		return
 	}
 
+	// Authorization: must be workspace member AND document owner
+	if ok, _ := app.IsWorkspaceMember(wsID, user.ID); !ok {
+		writeError(w, http.StatusForbidden, "not a member of this workspace")
+		return
+	}
 	if createdBy != user.ID {
 		writeError(w, http.StatusForbidden, "only document owner can delete")
 		return
@@ -267,22 +293,24 @@ func (app *App) handleDeleteDocument(w http.ResponseWriter, r *http.Request) {
 
 func (app *App) handleExecuteDocument(w http.ResponseWriter, r *http.Request) {
 	user := UserFromContext(r)
-	if user == nil {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid document id")
 		return
 	}
 
-	// Get document
+	// Get document with workspace_id for authorization
 	var language, content string
-	err = app.DB.QueryRow("SELECT language, content FROM code_documents WHERE id = $1", id).Scan(&language, &content)
+	var wsID int64
+	err = app.DB.QueryRow("SELECT language, content, workspace_id FROM code_documents WHERE id = $1", id).Scan(&language, &content, &wsID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "document not found")
+		return
+	}
+
+	// Authorization: check workspace membership
+	if ok, _ := app.IsWorkspaceMember(wsID, user.ID); !ok {
+		writeError(w, http.StatusForbidden, "not a member of this workspace")
 		return
 	}
 
@@ -325,16 +353,27 @@ func (app *App) scanDocuments(query string, args ...any) ([]CodeDocument, error)
 		if err := rows.Scan(&d.ID, &d.WorkspaceID, &d.Title, &d.Filename, &d.Language,
 			&d.Content, &d.Version, &d.CreatedBy, &d.LastEditedBy,
 			&d.CreatedAt, &d.UpdatedAt, &d.CreatedByName, &d.LastEditedByName); err != nil {
-			log.Printf("[documents] scan error: %v", err)
-			continue
+			return nil, fmt.Errorf("scan document row: %w", err)
 		}
 		docs = append(docs, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate document rows: %w", err)
 	}
 	return docs, nil
 }
 
-// detectLanguage determines the programming language from file extension
+// detectLanguage determines the programming language from filename
 func detectLanguage(filename string) string {
+	// Check bare filenames first
+	base := strings.ToLower(filepath.Base(filename))
+	switch base {
+	case "dockerfile":
+		return "dockerfile"
+	case "makefile", "gnumakefile":
+		return "makefile"
+	}
+
 	ext := strings.ToLower(filepath.Ext(filename))
 	switch ext {
 	case ".py":
@@ -381,8 +420,6 @@ func detectLanguage(filename string) string {
 		return "markdown"
 	case ".sql":
 		return "sql"
-	case ".dockerfile":
-		return "dockerfile"
 	default:
 		return "text"
 	}

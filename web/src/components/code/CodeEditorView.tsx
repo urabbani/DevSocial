@@ -19,7 +19,6 @@ export function CodeEditorView() {
     createDocument,
     updateDocument,
     setActiveDocument,
-    handleWSDocEvent,
     clearViewers,
   } = useDocumentStore();
 
@@ -27,7 +26,8 @@ export function CodeEditorView() {
   const [showNewFileModal, setShowNewFileModal] = useState(false);
   const [newFileForm, setNewFileForm] = useState({ filename: '', title: '', language: '', content: '' });
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const wsInitialized = useRef(false);
+  const contentRef = useRef(content);
+  contentRef.current = content;
 
   // Fetch documents on workspace change
   useEffect(() => {
@@ -35,6 +35,14 @@ export function CodeEditorView() {
       fetchDocuments(activeWorkspace.id);
     }
   }, [activeWorkspace?.id, fetchDocuments]);
+
+  // Clear auto-save timer when switching documents
+  useEffect(() => {
+    if (autoSaveTimer.current) {
+      clearTimeout(autoSaveTimer.current);
+      autoSaveTimer.current = null;
+    }
+  }, [activeDocumentId]);
 
   // Load document content when active document changes
   useEffect(() => {
@@ -55,38 +63,17 @@ export function CodeEditorView() {
     };
   }, [activeDocumentId, clearViewers]);
 
-  // Setup WebSocket document event listener
-  useEffect(() => {
-    if (wsInitialized.current) return;
-    wsInitialized.current = true;
-
-    const handleWSMessage = (e: MessageEvent) => {
-      try {
-        const msg = JSON.parse(e.data);
-        if (msg.type === 'doc_open' || msg.type === 'doc_close' || msg.type === 'doc_edit') {
-          handleWSDocEvent(msg);
-        }
-      } catch {
-        // Ignore parse errors
-      }
-    };
-
-    window.addEventListener('message', handleWSMessage);
-    return () => window.removeEventListener('message', handleWSMessage);
-  }, [handleWSDocEvent]);
-
-  // Send doc_open message via WebSocket when opening a document
+  // Send doc_open/doc_close via WebSocket when switching documents
   useEffect(() => {
     const sendWSMessage = (window as any).sendWSMessage;
     if (activeDocumentId && user && sendWSMessage) {
       sendWSMessage({
         type: 'doc_open',
         document_id: activeDocumentId,
-        content: user.username, // Send username for other viewers
+        content: user.username,
       });
     }
 
-    // Send doc_close on cleanup
     return () => {
       if (activeDocumentId && sendWSMessage) {
         sendWSMessage({
@@ -106,21 +93,20 @@ export function CodeEditorView() {
     }
 
     autoSaveTimer.current = setTimeout(async () => {
-      if (activeDocumentId && newContent !== content) {
-        const doc = documents.find((d) => d.id === activeDocumentId);
-        if (doc) {
-          try {
-            await updateDocument(activeDocumentId, {
-              content: newContent,
-              version: doc.version,
-            });
-          } catch {
-            // Version conflict - user needs to refresh
-          }
+      if (!activeDocumentId) return;
+      const doc = useDocumentStore.getState().documents.find((d) => d.id === activeDocumentId);
+      if (doc) {
+        try {
+          await useDocumentStore.getState().updateDocument(activeDocumentId, {
+            content: newContent,
+            version: doc.version,
+          });
+        } catch {
+          // Version conflict - will resolve on next edit
         }
       }
-    }, 2000); // 2 second debounce
-  }, [activeDocumentId, content, documents, updateDocument]);
+    }, 2000);
+  }, [activeDocumentId]);
 
   // Save on blur
   const handleBlur = useCallback(async () => {
@@ -129,11 +115,11 @@ export function CodeEditorView() {
     }
 
     if (activeDocumentId) {
-      const doc = documents.find((d) => d.id === activeDocumentId);
-      if (doc && content !== doc.content) {
+      const doc = useDocumentStore.getState().documents.find((d) => d.id === activeDocumentId);
+      if (doc && contentRef.current !== doc.content) {
         try {
-          await updateDocument(activeDocumentId, {
-            content,
+          await useDocumentStore.getState().updateDocument(activeDocumentId, {
+            content: contentRef.current,
             version: doc.version,
           });
         } catch {
@@ -141,7 +127,7 @@ export function CodeEditorView() {
         }
       }
     }
-  }, [activeDocumentId, content, documents, updateDocument]);
+  }, [activeDocumentId]);
 
   const handleDocumentSelect = useCallback((doc: CodeDocument) => {
     setActiveDocument(doc.id);
@@ -180,7 +166,6 @@ export function CodeEditorView() {
       {/* File Tree Sidebar */}
       <div className="w-64 flex-shrink-0">
         <FileTree
-          workspaceId={activeWorkspace.id}
           onDocumentSelect={handleDocumentSelect}
           onNewDocument={() => setShowNewFileModal(true)}
           activeDocumentId={activeDocumentId}
@@ -198,12 +183,12 @@ export function CodeEditorView() {
                 <span className="text-xs px-2 py-0.5 bg-[var(--bg-tertiary)] text-[var(--text-muted)] rounded">
                   {activeDoc.language}
                 </span>
-                {editors[activeDocumentId] && (
+                {editors[activeDocumentId!] && (
                   <span className="text-xs px-2 py-0.5 bg-[var(--accent)]/20 text-[var(--accent)] rounded animate-pulse">
-                    {editors[activeDocumentId]} is editing...
+                    {editors[activeDocumentId!]} is editing...
                   </span>
                 )}
-                {docViewers.length > 0 && !editors[activeDocumentId] && (
+                {docViewers.length > 0 && !editors[activeDocumentId!] && (
                   <span className="text-xs text-[var(--text-muted)]">
                     {docViewers.map((v) => v.username).join(', ')} viewing
                   </span>

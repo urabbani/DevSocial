@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../../api/client';
 
 interface OutputPanelProps {
@@ -31,14 +31,14 @@ export function OutputPanel({ documentId, language }: OutputPanelProps) {
   }, [documentId]);
 
   // Listen for run-code event from Monaco editor (Ctrl+Enter)
-  useEffect(() => {
-    const handleRunCode = () => {
-      handleExecute();
-    };
+  const handleExecuteRef = useRef<() => void>(() => {});
+  handleExecuteRef.current = async () => { await handleExecute(); };
 
-    window.addEventListener('run-code', handleRunCode);
-    return () => window.removeEventListener('run-code', handleRunCode);
-  }, [documentId]);
+  useEffect(() => {
+    const handler = () => handleExecuteRef.current();
+    window.addEventListener('run-code', handler);
+    return () => window.removeEventListener('run-code', handler);
+  }, []);
 
   const handleExecute = useCallback(async () => {
     if (!documentId) return;
