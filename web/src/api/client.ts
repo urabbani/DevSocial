@@ -184,6 +184,14 @@ export interface Message {
   file_ids?: number[];
 }
 
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+  status: 'pending' | 'executing' | 'completed' | 'error';
+  result?: string;
+}
+
 export interface Reaction {
   user_id: number;
   username: string;

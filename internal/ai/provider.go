@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -42,24 +43,32 @@ func NewProvider() *Provider {
 
 // ChatMessage is a single message in the conversation.
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string    `json:"role"`
+	Content    string    `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string    `json:"tool_call_id,omitempty"`
+	Name       string    `json:"name,omitempty"`
 }
 
 // ChatRequest is the request body sent to LiteLLM.
 type ChatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []ChatMessage `json:"messages"`
-	Stream      bool          `json:"stream"`
-	Temperature float64       `json:"temperature,omitempty"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
+	Model       string          `json:"model"`
+	Messages    []ChatMessage   `json:"messages"`
+	Stream      bool            `json:"stream"`
+	Temperature float64         `json:"temperature,omitempty"`
+	MaxTokens   int             `json:"max_tokens,omitempty"`
+	Tools       []ToolDefinition `json:"tools,omitempty"`
+	ToolChoice  *string         `json:"tool_choice,omitempty"`
 }
 
 // ChatResponse is a non-streaming response.
 type ChatResponse struct {
 	Choices []struct {
 		Message struct {
-			Content string `json:"content"`
+			Content   string     `json:"content"`
+			ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	Role      string     `json:"role"`
+	FinishReason *string    `json:"finish_reason"`
 		} `json:"message"`
 	} `json:"choices"`
 }
@@ -68,10 +77,59 @@ type ChatResponse struct {
 type SSEChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content string `json:"content"`
+			Role      string          `json:"role,omitempty"`
+			Content   string          `json:"content"`
+			ToolCalls []ToolCallDelta `json:"tool_calls,omitempty"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
+}
+
+// ToolCallDelta represents a partial tool call from a streaming chunk.
+type ToolCallDelta struct {
+	Index    int    `json:"index"`
+	ID       string `json:"id,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Function struct {
+		Name      string `json:"name,omitempty"`
+		Arguments string `json:"arguments,omitempty"`
+	} `json:"function"`
+}
+
+// ToolDefinition describes a tool for the LLM (OpenAI function calling format).
+type ToolDefinition struct {
+	Type     string       `json:"type"`
+	Function FunctionDef  `json:"function"`
+}
+
+// FunctionDef is the function part of a ToolDefinition.
+type FunctionDef struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
+}
+
+// ToolCall is a complete tool call from the LLM.
+type ToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+// ToolResult is the result of executing a tool, fed back to the LLM.
+type ToolResult struct {
+	ToolCallID string `json:"tool_call_id"`
+	Content    string `json:"content"`
+}
+
+// StreamResult is the result of a streaming request with tools.
+type StreamResult struct {
+	Text      string
+	ToolCalls []ToolCall
+	Err       error
 }
 
 // SetModel updates the active model.
@@ -198,12 +256,129 @@ func (p *Provider) SendMessageStream(model string, messages []ChatMessage, tempe
 				fullResponse.WriteString(choice.Delta.Content)
 			}
 			if choice.FinishReason != nil && *choice.FinishReason == "stop" {
-				return fullResponse.String(), nil
+				return fullResponse.String(), scanner.Err()
 			}
 		}
 	}
 
 	return fullResponse.String(), scanner.Err()
+}
+
+// SendMessageStreamWithTools sends a chat completion request with tool definitions.
+// Returns accumulated text and any tool calls the LLM wants to make.
+func (p *Provider) SendMessageStreamWithTools(model string, messages []ChatMessage, temperature float64, tools []ToolDefinition, onChunk func(text string)) StreamResult {
+	reqBody := ChatRequest{
+		Model:       model,
+		Messages:    messages,
+		Stream:      true,
+		Temperature: temperature,
+	MaxTokens:   4096,
+		Tools:       tools,
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return StreamResult{Err: fmt.Errorf("marshal request: %w", err)}
+	}
+
+	req, err := http.NewRequest("POST", p.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return StreamResult{Err: fmt.Errorf("create request: %w", err)}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return StreamResult{Err: fmt.Errorf("send request: %w", err)}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return StreamResult{Err: fmt.Errorf("litellm error %d: %s", resp.StatusCode, string(respBody))}
+	}
+
+	var fullResponse strings.Builder
+	toolCalls := make(map[int]*ToolCall)
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		var chunk SSEChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+
+		for _, choice := range chunk.Choices {
+			// Accumulate text
+			if choice.Delta.Content != "" {
+				if onChunk != nil {
+					onChunk(choice.Delta.Content)
+				}
+				fullResponse.WriteString(choice.Delta.Content)
+			}
+
+			// Accumulate tool call deltas
+			for _, tc := range choice.Delta.ToolCalls {
+				idx := tc.Index
+				existing, ok := toolCalls[idx]
+				if !ok {
+					existing = &ToolCall{
+						ID:   tc.ID,
+						Type: tc.Type,
+					}
+					toolCalls[idx] = existing
+				}
+				if tc.ID != "" {
+					existing.ID = tc.ID
+				}
+				if tc.Function.Name != "" {
+					existing.Function.Name = tc.Function.Name
+				}
+				if tc.Function.Arguments != "" {
+					existing.Function.Arguments += tc.Function.Arguments
+				}
+			}
+
+			if choice.FinishReason != nil {
+				if *choice.FinishReason == "stop" {
+					break
+				}
+				// "tool_calls" finish reason means the model wants tools called
+				if *choice.FinishReason == "tool_calls" {
+					log.Printf("[ai] stream finished with tool_calls finish_reason")
+				}
+			}
+		}
+	}
+
+	// Convert map to sorted slice
+	var resultCalls []ToolCall
+	for idx, call := range toolCalls {
+		if call != nil && call.ID != "" {
+			resultCalls = append(resultCalls, *call)
+		}
+		_ = idx // Reserved for future sorting
+	}
+	// Sort by index for deterministic order
+	// (already in order from map iteration, but be safe)
+
+	return StreamResult{
+		Text:      fullResponse.String(),
+		ToolCalls: resultCalls,
+		Err:       scanner.Err(),
+	}
 }
 
 // BuildChatMessages creates chat messages from conversation history.

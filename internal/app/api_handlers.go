@@ -1,11 +1,11 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 
@@ -522,6 +522,16 @@ type WSMessageOut struct {
 	Text      string   `json:"text,omitempty"`
 	MessageID int64    `json:"message_id,omitempty"`
 	ChannelID int64    `json:"channel_id,omitempty"`
+	ToolCall  *AIToolCall `json:"tool_call,omitempty"`
+}
+
+// AIToolCall represents a tool call sent to the client.
+type AIToolCall struct {
+	ID     string                 `json:"id"`
+	Name   string                 `json:"name"`
+	Args   string                 `json:"arguments"`
+	Status string                 `json:"status"` // pending, executing, completed, error
+	Result string                 `json:"result,omitempty"`
 }
 
 // isAIChannel checks if a channel is an AI channel.
@@ -533,7 +543,7 @@ func (app *App) isAIChannel(channelID int64) bool {
 	return ch.Type == "ai"
 }
 
-// processAIClaim runs an AI completion via LiteLLM and streams the response.
+// processAIClaim runs an AI completion via LiteLLM with tool calling support.
 func (app *App) processAIClaim(channelID int64, userMsg *Message) {
 	// Check AI provider is available
 	if app.AI == nil {
@@ -574,15 +584,18 @@ func (app *App) processAIClaim(channelID int64, userMsg *Message) {
 		chName = ch.Name
 	}
 
-	// Build system prompt
+	// Build system prompt with tool documentation
 	agents, _ := app.ListWorkspaceAgents(workspaceID)
 	basePrompt := ""
 	if len(agents) > 0 && agents[0].SystemPrompt != "" {
 		basePrompt = agents[0].SystemPrompt
 	}
+
+	// Add tool documentation to system prompt
+	toolDocs := app.buildToolDocumentation()
 	systemPrompt := basePrompt + fmt.Sprintf(
-		"\n\nYou are an AI assistant in the #%s channel of DevSocial, a collaborative platform for developers and researchers. Help the team with coding, data analysis, document review, and problem-solving. Be concise and actionable.",
-		chName,
+		"\n\nYou are an AI assistant in the #%s channel of DevSocial, a collaborative platform for developers and researchers. Help the team with coding, data analysis, document review, and problem-solving. Be concise and actionable.%s",
+		chName, toolDocs,
 	)
 
 	// Load max context setting
@@ -612,70 +625,176 @@ func (app *App) processAIClaim(channelID int64, userMsg *Message) {
 		app.Hub.BroadcastToChannel(channelID, data)
 	}
 
-	// Stream response from LiteLLM
+	// Get available tools
+	tools := app.Tools.ToToolDefinitions()
+
+	// Run the tool loop
 	model := app.AI.GetModel()
-	log.Printf("[ai] sending request to model %s for channel %d", model, channelID)
+	log.Printf("[ai] starting tool loop for channel %d", channelID)
 
-	// Use streaming endpoint
-	var aiContent strings.Builder
-	_, sendErr := app.AI.SendMessageStream(model, chatMessages, temperature, func(chunk string) {
-		chunkData, _ := json.Marshal(WSMessageOut{
-			Type:      "ai_chunk",
-			ChannelID: channelID,
-			Text:      chunk,
+	maxIterations := 10
+	iteration := 0
+	var finalResponse strings.Builder
+
+	for iteration < maxIterations {
+		iteration++
+		log.Printf("[ai] tool loop iteration %d", iteration)
+
+		// Stream response from LiteLLM with tools
+		result := app.AI.SendMessageStreamWithTools(model, chatMessages, temperature, tools, func(chunk string) {
+			chunkData, _ := json.Marshal(WSMessageOut{
+				Type:      "ai_chunk",
+				ChannelID: channelID,
+				Text:      chunk,
+			})
+			app.Hub.BroadcastToChannel(channelID, chunkData)
+			finalResponse.WriteString(chunk)
 		})
-		app.Hub.BroadcastToChannel(channelID, chunkData)
-		aiContent.WriteString(chunk)
+
+		if result.Err != nil {
+			log.Printf("[ai] error: %v", result.Err)
+			app.handleAIError(channelID, result.Err, thinkingMsg)
+			return
+		}
+
+		// If no tool calls, we're done
+		if len(result.ToolCalls) == 0 {
+			log.Printf("[ai] no tool calls, finishing")
+			break
+		}
+
+		// Process tool calls
+		for _, toolCall := range result.ToolCalls {
+			log.Printf("[ai] tool call: %s with args: %s", toolCall.Function.Name, toolCall.Function.Arguments)
+
+			// Send tool_call event to client
+			toolData, _ := json.Marshal(WSMessageOut{
+				Type:      "tool_call",
+				ChannelID: channelID,
+				ToolCall: &AIToolCall{
+					ID:     toolCall.ID,
+					Name:   toolCall.Function.Name,
+					Args:   toolCall.Function.Arguments,
+					Status: "executing",
+				},
+			})
+			app.Hub.BroadcastToChannel(channelID, toolData)
+
+			// Execute the tool
+			toolResult, err := app.Tools.ExecuteToolCall(context.Background(), toolCall)
+
+			// Send tool_result event to client
+			resultStatus := "completed"
+			if err != nil {
+				resultStatus = "error"
+			}
+			resultData, _ := json.Marshal(WSMessageOut{
+				Type:      "tool_result",
+				ChannelID: channelID,
+				ToolCall: &AIToolCall{
+					ID:     toolCall.ID,
+					Name:   toolCall.Function.Name,
+					Status: resultStatus,
+					Result: toolResult.Content,
+				},
+			})
+			app.Hub.BroadcastToChannel(channelID, resultData)
+
+			// Append tool result to messages for next iteration
+			chatMessages = append(chatMessages, ai.ChatMessage{
+				Role:       "assistant",
+				ToolCalls:  []ai.ToolCall{toolCall},
+			})
+			chatMessages = append(chatMessages, ai.ChatMessage{
+				Role:       "tool",
+				ToolCallID: toolResult.ToolCallID,
+				Content:    toolResult.Content,
+			})
+		}
+	}
+
+	// Clear the streaming placeholder
+	clearData, _ := json.Marshal(WSMessageOut{
+		Type:      "ai_chunk",
+		ChannelID: channelID,
+		Text:      "",
 	})
+	app.Hub.BroadcastToChannel(channelID, clearData)
 
-	// Clear the streaming placeholder (id=-1 on frontend)
-	if aiContent.Len() > 0 {
-		clearData, _ := json.Marshal(WSMessageOut{
-			Type:      "ai_chunk",
-			ChannelID: channelID,
-			Text:      "",
-		})
-		app.Hub.BroadcastToChannel(channelID, clearData)
-	}
-
-	if sendErr != nil {
-		log.Printf("[ai] error: %v", sendErr)
-		errContent := fmt.Sprintf("AI error: %v", sendErr)
-		errHTML, _ := RenderMarkdown(errContent)
-		errMsg, _ := app.CreateMessage(channelID, nil, errContent, errHTML, true, true)
-		if errMsg != nil {
-			data, _ := json.Marshal(WSMessageOut{Type: "message", Message: errMsg})
-			app.Hub.BroadcastToChannel(channelID, data)
-		}
-		// Delete thinking message
-		if thinkingMsg != nil {
-			app.DB.Exec(`DELETE FROM messages WHERE id = $1`, thinkingMsg.ID)
-			delData, _ := json.Marshal(WSMessageOut{Type: "message_delete", MessageID: thinkingMsg.ID})
-			app.Hub.BroadcastToChannel(channelID, delData)
-		}
-		return
-	}
+	// Signal stream done
+	doneData, _ := json.Marshal(WSMessageOut{
+		Type:      "ai_stream_done",
+		ChannelID: channelID,
+	})
+	app.Hub.BroadcastToChannel(channelID, doneData)
 
 	// Save the complete AI response as a real message
-	if aiContent.Len() > 0 {
-		responseContent := aiContent.String()
-		responseHTML, _ := RenderMarkdown(responseContent)
-		aiMsg, createErr := app.CreateMessage(channelID, nil, responseContent, responseHTML, true, false)
-		if createErr == nil {
-			data, _ := json.Marshal(WSMessageOut{Type: "message", Message: aiMsg})
-			app.Hub.BroadcastToChannel(channelID, data)
-		}
-	} else {
-		fallbackContent := "AI returned an empty response."
-		fallbackHTML, _ := RenderMarkdown(fallbackContent)
-		aiMsg, _ := app.CreateMessage(channelID, nil, fallbackContent, fallbackHTML, true, true)
-		if aiMsg != nil {
-			data, _ := json.Marshal(WSMessageOut{Type: "message", Message: aiMsg})
-			app.Hub.BroadcastToChannel(channelID, data)
-		}
+	responseContent := finalResponse.String()
+	if responseContent == "" {
+		responseContent = "AI returned an empty response."
+	}
+
+	responseHTML, _ := RenderMarkdown(responseContent)
+	aiMsg, createErr := app.CreateMessage(channelID, nil, responseContent, responseHTML, true, false)
+	if createErr == nil {
+		data, _ := json.Marshal(WSMessageOut{Type: "message", Message: aiMsg})
+		app.Hub.BroadcastToChannel(channelID, data)
 	}
 
 	// Delete the "thinking" placeholder message
+	if thinkingMsg != nil {
+		app.DB.Exec(`DELETE FROM messages WHERE id = $1`, thinkingMsg.ID)
+		delData, _ := json.Marshal(WSMessageOut{Type: "message_delete", MessageID: thinkingMsg.ID})
+		app.Hub.BroadcastToChannel(channelID, delData)
+	}
+}
+
+// buildToolDocumentation creates a description of available tools for the system prompt.
+func (app *App) buildToolDocumentation() string {
+	if app.Tools == nil {
+		return ""
+	}
+
+	tools := app.Tools.List()
+	if len(tools) == 0 {
+		return ""
+	}
+
+	var doc strings.Builder
+	doc.WriteString("\n\nAvailable tools:\n")
+	for _, name := range tools {
+		tool, ok := app.Tools.Get(name)
+		if ok {
+			doc.WriteString(fmt.Sprintf("- %s: %s\n", name, tool.Description()))
+		}
+	}
+
+	// Add chart rendering instructions
+	doc.WriteString("\n\nWhen displaying data visualizations, use the following format:\n")
+	doc.WriteString("```chart\n{ JSON chart configuration for ECharts }\n```\n")
+	doc.WriteString("Supported chart types: bar, line, pie, scatter, etc.\n")
+
+	return doc.String()
+}
+
+// handleAIError sends an error message and cleans up the thinking indicator.
+func (app *App) handleAIError(channelID int64, err error, thinkingMsg *Message) {
+	errContent := fmt.Sprintf("AI error: %v", err)
+	errHTML, _ := RenderMarkdown(errContent)
+	errMsg, _ := app.CreateMessage(channelID, nil, errContent, errHTML, true, true)
+	if errMsg != nil {
+		data, _ := json.Marshal(WSMessageOut{Type: "message", Message: errMsg})
+		app.Hub.BroadcastToChannel(channelID, data)
+	}
+
+	// Send stream done event
+	doneData, _ := json.Marshal(WSMessageOut{
+		Type:      "ai_stream_done",
+		ChannelID: channelID,
+	})
+	app.Hub.BroadcastToChannel(channelID, doneData)
+
+	// Delete thinking message
 	if thinkingMsg != nil {
 		app.DB.Exec(`DELETE FROM messages WHERE id = $1`, thinkingMsg.ID)
 		delData, _ := json.Marshal(WSMessageOut{Type: "message_delete", MessageID: thinkingMsg.ID})

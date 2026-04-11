@@ -63,7 +63,7 @@ export function MessageView() {
     <div className="flex-1 flex flex-col bg-[var(--bg-primary)]">
       <ChannelHeader channel={activeChannel} />
 
-      <MessageList messages={messages} loading={loading} />
+      <MessageList messages={messages} loading={loading} channelId={channelId} />
 
       <div ref={bottomRef} />
       <MessageInput onSend={handleSend} channelId={channelId} channelName={activeChannel.name} />

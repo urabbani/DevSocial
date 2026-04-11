@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { api, type Message } from '../api/client';
+import { api, type Message, type ToolCall } from '../api/client';
 import type { WSMessage } from '../hooks/useWebSocket';
 
 interface MessageState {
@@ -7,12 +7,15 @@ interface MessageState {
   hasMoreByChannel: Record<number, boolean>;
   loadingByChannel: Record<number, boolean>;
   typingUsers: Record<number, Map<number, string>>; // channelId -> userId -> username
+  activeToolCalls: Record<number, ToolCall[]>; // channelId -> tool calls
 
   fetchMessages: (channelId: number, before?: number) => Promise<void>;
   addMessage: (channelId: number, message: Message) => void;
   addAIChunk: (channelId: number, text: string) => void;
+  clearAIStream: (channelId: number) => void;
   removeMessage: (channelId: number, messageId: number) => void;
   updateMessage: (channelId: number, messageId: number, content: string) => void;
+  upsertToolCall: (channelId: number, toolCall: ToolCall) => void;
   handleWSMessage: (msg: WSMessage) => void;
   handleWSDelete: (messageId: number) => void;
   setTyping: (channelId: number, userId: number, username: string) => void;
@@ -24,6 +27,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   hasMoreByChannel: {},
   loadingByChannel: {},
   typingUsers: {},
+  activeToolCalls: {},
 
   fetchMessages: async (channelId: number, before?: number) => {
     set((s) => ({ loadingByChannel: { ...s.loadingByChannel, [channelId]: true } }));
@@ -87,6 +91,37 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     });
   },
 
+  // Clear the AI streaming sentinel message (id=-1)
+  clearAIStream: (channelId: number) => {
+    set((s) => ({
+      messagesByChannel: {
+        ...s.messagesByChannel,
+        [channelId]: (s.messagesByChannel[channelId] || []).filter((m) => m.id !== -1),
+      },
+      activeToolCalls: {
+        ...s.activeToolCalls,
+        [channelId]: [], // Clear tool calls too
+      },
+    }));
+  },
+
+  // Add or update a tool call for a channel
+  upsertToolCall: (channelId: number, toolCall: ToolCall) => {
+    set((s) => {
+      const existing = s.activeToolCalls[channelId] || [];
+      const idx = existing.findIndex((tc) => tc.id === toolCall.id);
+      const updated = [...existing];
+      if (idx >= 0) {
+        updated[idx] = toolCall;
+      } else {
+        updated.push(toolCall);
+      }
+      return {
+        activeToolCalls: { ...s.activeToolCalls, [channelId]: updated },
+      };
+    });
+  },
+
   removeMessage: (channelId: number, messageId: number) => {
     set((s) => ({
       messagesByChannel: {
@@ -111,6 +146,19 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     if (msg.type === 'message' && msg.message) {
       const m = msg.message as Message;
       get().addMessage(m.channel_id, m);
+    } else if (msg.type === 'ai_chunk' && msg.text !== undefined) {
+      if (msg.text === '') {
+        // Empty text signals clear
+        get().clearAIStream(msg.channel_id);
+      } else {
+        get().addAIChunk(msg.channel_id, msg.text);
+      }
+    } else if (msg.type === 'ai_stream_done') {
+      get().clearAIStream(msg.channel_id);
+    } else if (msg.type === 'tool_call' && msg.tool_call) {
+      get().upsertToolCall(msg.channel_id, msg.tool_call);
+    } else if (msg.type === 'tool_result' && msg.tool_call) {
+      get().upsertToolCall(msg.channel_id, msg.tool_call);
     }
   },
 

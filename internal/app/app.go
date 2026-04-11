@@ -20,6 +20,9 @@ type App struct {
 	RateLimiter        *IPRateLimiter
 	Hub                *ws.Hub
 	AI                 *ai.Provider
+	Tools              *ai.ToolRegistry
+	Sandbox            *ai.SandboxClient
+	WebSearch          *ai.WebSearchClient
 	Storage            *storage.MinIO
 	RAG                *rag.Client
 }
@@ -38,6 +41,33 @@ func New(db *sql.DB, githubClientID, githubClientSecret, baseURL string) *App {
 		aiProvider.SetModel("claude-sonnet")
 		log.Printf("Using default AI model: claude-sonnet")
 	}
+
+	// Tool registry
+	tools := ai.NewToolRegistry()
+
+	// Sandbox execution client
+	sandbox := ai.NewSandboxClient()
+	if err := sandbox.Health(); err != nil {
+		log.Printf("Docker sandbox not available: %v — code execution disabled", err)
+	} else {
+		tools.Register(ai.NewCodeExecuteTool(sandbox))
+		log.Printf("Docker sandbox connected")
+	}
+
+	// Web search client
+	webSearch := ai.NewWebSearchClient()
+	if err := webSearch.Health(); err != nil {
+		log.Printf("Web search not available: %v — web search disabled", err)
+	} else {
+		tools.Register(ai.NewWebSearchTool(webSearch))
+		log.Printf("Web search connected")
+	}
+
+	// File read tool (always available - reads from project root)
+	tools.Register(ai.NewFileReadTool("."))
+
+	// NoOpTool for testing
+	tools.Register(&ai.NoOpTool{})
 
 	// File storage (MinIO)
 	var store *storage.MinIO
@@ -68,6 +98,9 @@ func New(db *sql.DB, githubClientID, githubClientSecret, baseURL string) *App {
 		RateLimiter:        NewIPRateLimiter(),
 		Hub:                ws.NewHub(),
 		AI:                 aiProvider,
+		Tools:              tools,
+		Sandbox:            sandbox,
+		WebSearch:          webSearch,
 		Storage:            store,
 		RAG:                ragClient,
 	}

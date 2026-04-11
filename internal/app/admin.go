@@ -133,11 +133,15 @@ func (app *App) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 
 func isValidSettingKey(key string) bool {
 	validKeys := map[string]bool{
-		"ai_model":                true,
-		"ai_fallback_model":       true,
-		"ai_system_prompt":        true,
-		"ai_max_context_messages": true,
-		"ai_temperature":          true,
+		"ai_model":                  true,
+		"ai_fallback_model":         true,
+		"ai_system_prompt":          true,
+		"ai_max_context_messages":   true,
+		"ai_temperature":            true,
+		"ai_tool_auto_execute":      true,
+		"ai_max_tool_iterations":    true,
+		"ai_code_execution_enabled": true,
+		"ai_web_search_enabled":     true,
 	}
 	return validKeys[key]
 }
@@ -150,7 +154,7 @@ func validateSettingValue(key, value string) string {
 		}
 	case "ai_temperature":
 		// Clamp to valid range
-		t := 0.7
+		_ = 0.7 // placeholder
 		for _, c := range value {
 			if c == '.' || (c >= '0' && c <= '9') {
 				continue
@@ -164,6 +168,14 @@ func validateSettingValue(key, value string) string {
 		if _, err := strconv.Atoi(value); err != nil {
 			return "50"
 		}
+		case "ai_max_tool_iterations":
+			if n, err := strconv.Atoi(value); err != nil || n < 1 || n > 20 {
+				return "10"
+			}
+		case "ai_tool_auto_execute", "ai_code_execution_enabled", "ai_web_search_enabled":
+			if value != "true" && value != "false" {
+				return "true"
+			}
 	}
 	return value
 }

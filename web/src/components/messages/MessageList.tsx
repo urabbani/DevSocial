@@ -1,9 +1,12 @@
 import { useRef } from 'react';
 import type { Message } from '../../api/client';
+import { MarkdownRenderer } from './MarkdownRenderer';
+import { useMessageStore } from '../../stores/messages';
 
 interface Props {
   messages: Message[];
   loading: boolean;
+  channelId: number;
 }
 
 function formatTime(iso: string): string {
@@ -18,32 +21,9 @@ function formatTime(iso: string): string {
   return d.toLocaleDateString();
 }
 
-function renderContent(content: string): string {
-  // Basic markdown: code blocks, inline code, bold, italic
-  let html = content
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+function MessageBubble({ msg, isGroupStart, channelId }: { msg: Message; isGroupStart: boolean; channelId: number }) {
+  const activeToolCalls = useMessageStore((s) => s.activeToolCalls[channelId] || []);
 
-  // Code blocks
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="bg-[var(--bg-secondary)] rounded p-2 my-2 overflow-x-auto text-sm font-mono"><code>$2</code></pre>');
-
-  // Inline code
-  html = html.replace(/`([^`]+)`/g, '<code class="bg-[var(--bg-secondary)] px-1.5 py-0.5 rounded text-sm font-mono text-[var(--accent)]">$1</code>');
-
-  // Bold
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-
-  // Italic
-  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-
-  // Line breaks
-  html = html.replace(/\n/g, '<br/>');
-
-  return html;
-}
-
-function MessageBubble({ msg, isGroupStart }: { msg: Message; isGroupStart: boolean }) {
   if (msg.is_system) {
     return (
       <div className="text-center my-2">
@@ -53,6 +33,9 @@ function MessageBubble({ msg, isGroupStart }: { msg: Message; isGroupStart: bool
       </div>
     );
   }
+
+  // For AI messages, include active tool calls
+  const toolCalls = msg.is_ai && msg.id === -1 ? activeToolCalls : undefined;
 
   return (
     <div className={`flex gap-3 px-4 py-0.5 hover:bg-[var(--bg-secondary)]/50 ${isGroupStart ? 'mt-3' : ''}`}>
@@ -74,16 +57,15 @@ function MessageBubble({ msg, isGroupStart }: { msg: Message; isGroupStart: bool
             {msg.edited_at && <span className="text-xs text-[var(--text-muted)]">(edited)</span>}
           </div>
         )}
-        <div
-          className={`text-sm text-[var(--text-primary)] leading-relaxed break-words ${msg.is_ai ? 'bg-[var(--bg-secondary)]/50 rounded-lg px-3 py-2' : ''}`}
-          dangerouslySetInnerHTML={{ __html: renderContent(msg.content) }}
-        />
+        <div className={`text-sm text-[var(--text-primary)] leading-relaxed break-words ${msg.is_ai ? 'bg-[var(--bg-secondary)]/50 rounded-lg px-3 py-2' : ''}`}>
+          <MarkdownRenderer content={msg.content} toolCalls={toolCalls} />
+        </div>
       </div>
     </div>
   );
 }
 
-export function MessageList({ messages, loading }: Props) {
+export function MessageList({ messages, loading, channelId }: Props) {
   const listRef = useRef<HTMLDivElement>(null);
   const topRef = useRef<HTMLDivElement>(null);
 
@@ -110,7 +92,7 @@ export function MessageList({ messages, loading }: Props) {
         </div>
       )}
       {messages.map((msg, i) => (
-        <MessageBubble key={msg.id} msg={msg} isGroupStart={shouldShowHeader(i)} />
+        <MessageBubble key={msg.id} msg={msg} isGroupStart={shouldShowHeader(i)} channelId={channelId} />
       ))}
     </div>
   );

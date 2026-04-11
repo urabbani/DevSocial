@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { useWorkspaceStore } from '../stores/workspace';
 import { useMessageStore } from '../stores/messages';
 import { useAuthStore } from '../stores/auth';
+import type { ToolCall } from '../api/client';
 
 export interface WSMessage {
   type: string;
@@ -13,6 +14,7 @@ export interface WSMessage {
   status?: string;
   message?: any;
   message_id?: number;
+  tool_call?: ToolCall;
 }
 
 const MAX_RECONNECT_ATTEMPTS = 20;
@@ -67,13 +69,12 @@ export function useWebSocket() {
             break;
           case 'presence':
             break;
-          case 'ai_chunk': {
-            const text = msg.text ?? msg.content;
-            if (msg.channel_id && text) {
-              msgStore.addAIChunk(msg.channel_id, text);
-            }
+          case 'ai_chunk':
+          case 'ai_stream_done':
+          case 'tool_call':
+          case 'tool_result':
+            msgStore.handleWSMessage(msg);
             break;
-          }
         }
       } catch {
         // Ignore parse errors
