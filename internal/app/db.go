@@ -50,15 +50,125 @@ func runMigrations(db *sql.DB) error {
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", entry.Name(), err)
 		}
-		if _, err := db.Exec(string(content)); err != nil {
-			// PostgreSQL handles idempotency via IF NOT EXISTS / CREATE EXTENSION IF NOT EXISTS
-			// For tables, we check if they already exist
-			if !strings.Contains(err.Error(), "already exists") {
-				return fmt.Errorf("exec migration %s: %w", entry.Name(), err)
+		// pgx Exec() uses extended query protocol which only supports single statements.
+		// Split the file into individual statements, respecting $$ quoting.
+		stmts := splitSQL(string(content))
+		for _, stmt := range stmts {
+			stmt = stripLeadingComments(stmt)
+			if stmt == "" || isCommentOnly(stmt) {
+				continue
+			}
+			if _, err := db.Exec(stmt); err != nil {
+				msg := err.Error()
+				if !strings.Contains(msg, "already exists") && !strings.Contains(msg, "duplicate key") {
+					return fmt.Errorf("exec migration %s [%s...]: %w", entry.Name(), truncate(stmt, 80), err)
+				}
 			}
 		}
 	}
 	return nil
+}
+
+// splitSQL splits SQL text into individual statements, respecting $$ quoting.
+func splitSQL(sqlText string) []string {
+	var stmts []string
+	var buf strings.Builder
+	inDollarQuote := false
+	dollarTag := ""
+	i := 0
+
+	for i < len(sqlText) {
+		ch := sqlText[i]
+
+		// Check for dollar-quote start
+		if ch == '$' && !inDollarQuote {
+			// Look for matching closing $ to form a dollar tag like $$ or $func$
+			end := strings.Index(sqlText[i+1:], "$")
+			if end >= 0 {
+				tag := sqlText[i : i+1+end+1]
+				buf.WriteString(tag)
+				inDollarQuote = true
+				dollarTag = tag
+				i += len(tag)
+				continue
+			}
+		}
+
+		// Inside dollar-quoted string, look for closing tag
+		if inDollarQuote {
+			if ch == '$' && i+len(dollarTag) <= len(sqlText) && sqlText[i:i+len(dollarTag)] == dollarTag {
+				buf.WriteString(dollarTag)
+				inDollarQuote = false
+				i += len(dollarTag)
+				continue
+			}
+			buf.WriteByte(ch)
+			i++
+			continue
+		}
+
+		if ch == ';' {
+			stmt := strings.TrimSpace(buf.String())
+			if stmt != "" {
+				stmts = append(stmts, stmt)
+			}
+			buf.Reset()
+		} else {
+			buf.WriteByte(ch)
+		}
+		i++
+	}
+
+	// Last statement without trailing semicolon
+	stmt := strings.TrimSpace(buf.String())
+	if stmt != "" && !isCommentOnly(stmt) {
+		stmts = append(stmts, stmt)
+	}
+
+	// Filter out comment-only statements
+	filtered := make([]string, 0, len(stmts))
+	for _, s := range stmts {
+		if !isCommentOnly(s) {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
+// stripLeadingComments removes comment-only lines from the beginning of a SQL statement.
+func stripLeadingComments(s string) string {
+	lines := strings.Split(s, "\n")
+	start := 0
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && !strings.HasPrefix(trimmed, "--") {
+			start = i
+			break
+		}
+	}
+	return strings.Join(lines[start:], "\n")
+}
+
+func isCommentOnly(s string) bool {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return true
+	}
+	// Check if all lines start with --
+	for _, line := range strings.Split(trimmed, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "--") {
+			return false
+		}
+	}
+	return true
 }
 
 // --- Users ---
