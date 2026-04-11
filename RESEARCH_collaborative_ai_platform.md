@@ -417,7 +417,20 @@ general_settings:
 - **Leverage:** LiteLLM, Docker socket, DuckDuckGo HTML API, ECharts, react-markdown
 - **Deliverable:** AI agents participate in conversations with tool use, code execution, web search, and data visualization
 
-### Phase 4: Collaborative Code and Git (Weeks 10-12)
+### Phase 4: Advanced Search with pgvector (COMPLETE) -- NEW SCOPE
+**Focus:** Semantic similarity search using vector embeddings
+- [x] pgvector PostgreSQL image configured
+- [x] Database migration for embedding columns (384-dim vectors)
+- [x] HNSW indexes for fast approximate nearest neighbor search
+- [x] SemanticSearcher for vector similarity queries
+- [x] Embedder for batch migration of existing content
+- [x] Search API with keyword/semantic/hybrid modes
+- [x] Frontend search UI with mode toggle and relevance scores
+- [x] Admin endpoint for re-indexing embeddings
+- **Leverage:** pgvector, LiteLLM embeddings
+- **Deliverable:** Search by meaning, not just keywords
+
+### Phase 5: Collaborative Code and Git (Weeks 10-12)
 **Focus:** Live collaborative coding with version control
 - Monaco Editor integration in React
 - Yjs CRDT sync via Hocuspocus server
@@ -428,7 +441,7 @@ general_settings:
 - **Leverage:** Yjs, Hocuspocus, Monaco Editor, go-git
 - **Deliverable:** Multi-user live coding with git integration
 
-### Phase 5: Action Execution and MCP (Weeks 13-15)
+### Phase 6: Action Execution and MCP (Weeks 13-15)
 **Focus:** AI agents that actually do work
 - MCP server implementations: filesystem, git, shell, database
 - Docker execution sandbox for code execution
@@ -439,7 +452,7 @@ general_settings:
 - **Leverage:** MCP SDK, E2B patterns, Aider's edit format
 - **Deliverable:** AI agents can edit code, run commands, modify files with approval
 
-### Phase 6: Data Science and Task Integration (Weeks 16-18)
+### Phase 7: Data Science and Task Integration (Weeks 16-18)
 **Focus:** Scientific analysis and project management
 - Jupyter kernel integration via Python worker
 - Plotly.js and Apache ECharts for interactive visualizations
