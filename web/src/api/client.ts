@@ -137,6 +137,12 @@ export const api = {
   },
   // Re-index embeddings (admin only)
   reindexEmbeddings: () => request<{ status: string }>('/admin/reindex-embeddings', { method: 'POST' }),
+
+  // Notifications
+  getNotifications: () => request<Notification[]>('/notifications'),
+  getUnreadCount: () => request<{ count: number }>('/notifications/unread-count'),
+  markNotificationRead: (id: number) => request<{ status: string }>(`/notifications/${id}/read`, { method: 'PATCH' }),
+  markAllNotificationsRead: () => request<{ status: string }>('/notifications/read-all', { method: 'POST' }),
 };
 
 // Types
@@ -323,4 +329,23 @@ export interface SearchResult {
   author?: string;
   date: string;
   score?: number; // Relevance score for semantic search (0-1)
+}
+
+export interface Notification {
+  id: number;
+  user_id: number;
+  type: 'mention' | 'reaction' | 'task_assigned' | 'post_reply';
+  source_user_id?: number;
+  source_user?: {
+    id: number;
+    username: string;
+    display_name: string;
+    avatar_url: string;
+  };
+  source_message_id?: number;
+  source_post_id?: number;
+  source_task_id?: number;
+  read: boolean;
+  data?: Record<string, any>;
+  created_at: string;
 }

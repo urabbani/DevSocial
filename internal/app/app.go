@@ -215,6 +215,12 @@ func (app *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/search", app.requireAuth(app.handleSearch))
 	mux.HandleFunc("POST /api/admin/reindex-embeddings", app.requireAuth(app.handleReindexEmbeddings))
 
+	// Notifications
+	mux.HandleFunc("GET /api/notifications", app.requireAuth(app.handleGetNotifications))
+	mux.HandleFunc("GET /api/notifications/unread-count", app.requireAuth(app.handleGetUnreadCount))
+	mux.HandleFunc("PATCH /api/notifications/{id}/read", app.requireAuth(app.handleMarkNotificationRead))
+	mux.HandleFunc("POST /api/notifications/read-all", app.requireAuth(app.handleMarkAllRead))
+
 	return app.withSecurityHeaders(app.withUser(app.withRateLimit(mux)))
 }
 

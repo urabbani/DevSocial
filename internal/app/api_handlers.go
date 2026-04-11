@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -321,6 +322,9 @@ func (app *App) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 	})
 	app.Hub.BroadcastToChannel(channelID, msgBytes)
 
+	// Check for @mentions and send notifications
+	go app.notifyMentions(input.Content, user.ID, channelID, msg.ID)
+
 	// If this is an AI channel, trigger claw-code
 	if app.isAIChannel(channelID) {
 		go app.processAIClaim(channelID, msg)
@@ -517,12 +521,13 @@ func (app *App) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 
 // WSMessageOut is the format sent to WebSocket clients.
 type WSMessageOut struct {
-	Type      string   `json:"type"`
-	Message   *Message `json:"message,omitempty"`
-	Text      string   `json:"text,omitempty"`
-	MessageID int64    `json:"message_id,omitempty"`
-	ChannelID int64    `json:"channel_id,omitempty"`
-	ToolCall  *AIToolCall `json:"tool_call,omitempty"`
+	Type         string        `json:"type"`
+	Message      *Message      `json:"message,omitempty"`
+	Text         string        `json:"text,omitempty"`
+	MessageID    int64         `json:"message_id,omitempty"`
+	ChannelID    int64         `json:"channel_id,omitempty"`
+	ToolCall     *AIToolCall   `json:"tool_call,omitempty"`
+	Notification *Notification `json:"notification,omitempty"`
 }
 
 // AIToolCall represents a tool call sent to the client.
@@ -800,6 +805,145 @@ func (app *App) handleAIError(channelID int64, err error, thinkingMsg *Message) 
 		delData, _ := json.Marshal(WSMessageOut{Type: "message_delete", MessageID: thinkingMsg.ID})
 		app.Hub.BroadcastToChannel(channelID, delData)
 	}
+}
+
+// --- Notifications ---
+
+func (app *App) handleGetNotifications(w http.ResponseWriter, r *http.Request) {
+	user := UserFromContext(r)
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	rows, err := app.DB.Query(`
+		SELECT n.id, n.user_id, n.type, n.source_user_id, n.source_message_id, n.source_post_id, n.source_task_id, n.read, n.data, n.created_at,
+			u.id, u.username, u.display_name, u.avatar_url
+		FROM notifications n
+		LEFT JOIN users u ON n.source_user_id = u.id
+		WHERE n.user_id = $1
+		ORDER BY n.created_at DESC
+		LIMIT $2
+	`, user.ID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to fetch notifications")
+		return
+	}
+	defer rows.Close()
+
+	var notifications []Notification
+	for rows.Next() {
+		var notif Notification
+		var sourceUserID, sourceMessageID, sourcePostID, sourceTaskID sql.NullInt64
+		var dataJSON []byte
+
+		err := rows.Scan(
+			&notif.ID, &notif.UserID, &notif.Type, &sourceUserID, &sourceMessageID, &sourcePostID, &sourceTaskID,
+			&notif.Read, &dataJSON, &notif.CreatedAt,
+			&notif.SourceUser.ID, &notif.SourceUser.Username, &notif.SourceUser.DisplayName, &notif.SourceUser.AvatarURL,
+		)
+		if err != nil {
+			continue
+		}
+
+		if sourceUserID.Valid {
+			uid := sourceUserID.Int64
+			notif.SourceUserID = &uid
+		}
+		if sourceMessageID.Valid {
+			id := sourceMessageID.Int64
+			notif.SourceMessageID = &id
+		}
+		if sourcePostID.Valid {
+			id := sourcePostID.Int64
+			notif.SourcePostID = &id
+		}
+		if sourceTaskID.Valid {
+			id := sourceTaskID.Int64
+			notif.SourceTaskID = &id
+		}
+
+		if len(dataJSON) > 0 {
+			json.Unmarshal(dataJSON, &notif.Data)
+		}
+
+		notifications = append(notifications, notif)
+	}
+
+	writeJSON(w, http.StatusOK, notifications)
+}
+
+func (app *App) handleMarkNotificationRead(w http.ResponseWriter, r *http.Request) {
+	user := UserFromContext(r)
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid notification id")
+		return
+	}
+
+	// Verify ownership
+	var userID int64
+	err = app.DB.QueryRow("SELECT user_id FROM notifications WHERE id = $1", id).Scan(&userID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "notification not found")
+		return
+	}
+	if userID != user.ID {
+		writeError(w, http.StatusForbidden, "not your notification")
+		return
+	}
+
+	// Mark as read
+	_, err = app.DB.Exec("UPDATE notifications SET read = TRUE WHERE id = $1", id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to mark read")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "marked read"})
+}
+
+func (app *App) handleMarkAllRead(w http.ResponseWriter, r *http.Request) {
+	user := UserFromContext(r)
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	_, err := app.DB.Exec("UPDATE notifications SET read = TRUE WHERE user_id = $1", user.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to mark all read")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "all marked read"})
+}
+
+func (app *App) handleGetUnreadCount(w http.ResponseWriter, r *http.Request) {
+	user := UserFromContext(r)
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	var count int
+	err := app.DB.QueryRow("SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND read = FALSE", user.ID).Scan(&count)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get count")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"count": count})
 }
 
 // --- WebSocket ---

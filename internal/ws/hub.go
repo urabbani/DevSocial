@@ -167,6 +167,22 @@ func (h *Hub) BroadcastToWorkspace(workspaceID int64, message []byte) {
 	}
 }
 
+// SendToUser sends a message to a specific user's WebSocket connections.
+func (h *Hub) SendToUser(userID int64, message []byte) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	for client := range h.clients {
+		if client.userID == userID {
+			select {
+			case client.send <- message:
+			default:
+				// Client channel is full, skip
+			}
+		}
+	}
+}
+
 // ServeWS upgrades an HTTP connection to WebSocket and registers the client.
 func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, userID int64) {
 	conn, err := upgrader.Upgrade(w, r, nil)

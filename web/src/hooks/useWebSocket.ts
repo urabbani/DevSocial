@@ -2,7 +2,9 @@ import { useEffect, useRef, useCallback } from 'react';
 import { useWorkspaceStore } from '../stores/workspace';
 import { useMessageStore } from '../stores/messages';
 import { useAuthStore } from '../stores/auth';
+import { useNotificationStore } from '../stores/notifications';
 import type { ToolCall } from '../api/client';
+import type { Notification } from '../api/client';
 
 export interface WSMessage {
   type: string;
@@ -15,6 +17,7 @@ export interface WSMessage {
   message?: any;
   message_id?: number;
   tool_call?: ToolCall;
+  notification?: Notification;
 }
 
 const MAX_RECONNECT_ATTEMPTS = 20;
@@ -36,7 +39,7 @@ export function useWebSocket() {
       reconnectDelay.current = 2000;
       reconnectAttempts.current = 0;
       const channels = useWorkspaceStore.getState().channels || [];
-      if (channels.length > 0) {
+      if (channels.length > 0 {
         ws.send(JSON.stringify({
           type: 'subscribe',
           channel_ids: channels.map((c) => c.id),
@@ -49,6 +52,7 @@ export function useWebSocket() {
       try {
         const msg: WSMessage = JSON.parse(event.data);
         const msgStore = useMessageStore.getState();
+        const notifStore = useNotificationStore.getState();
 
         switch (msg.type) {
           case 'message':
@@ -74,6 +78,11 @@ export function useWebSocket() {
           case 'tool_call':
           case 'tool_result':
             msgStore.handleWSMessage(msg);
+            break;
+          case 'notification':
+            if (msg.notification && notifStore) {
+              notifStore.handleWSNotification(msg.notification);
+            }
             break;
         }
       } catch {

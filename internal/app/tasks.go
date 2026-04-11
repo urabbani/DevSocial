@@ -1,6 +1,7 @@
 package app
 
 import (
+	"database/sql"
 	"log"
 	"net/http"
 	"strconv"
@@ -111,11 +112,22 @@ func (app *App) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create task")
 		return
 	}
+
+	// Notify assignee if different from creator
+	if t.AssigneeID != nil && *t.AssigneeID != user.ID {
+		go app.notifyTaskAssignment(t.ID, *t.AssigneeID, user.ID)
+	}
 	t.CreatorName = user.Username
 	writeJSON(w, http.StatusCreated, t)
 }
 
 func (app *App) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
+	user := UserFromContext(r)
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid task id")
@@ -165,8 +177,19 @@ func (app *App) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if input.AssigneeID != nil {
+		// Get current assignee to check if it changed
+		var oldAssigneeID sql.NullInt64
+		app.DB.QueryRow("SELECT assignee_id FROM tasks WHERE id = $1", id).Scan(&oldAssigneeID)
+
 		if _, err := app.DB.Exec(`UPDATE tasks SET assignee_id = $1, updated_at = $2 WHERE id = $3`, *input.AssigneeID, now, id); err != nil {
 			log.Printf("[tasks] update error: %v", err)
+		}
+
+		// Notify new assignee if different from old assignee and not self
+		if *input.AssigneeID != 0 && (!oldAssigneeID.Valid || oldAssigneeID.Int64 != *input.AssigneeID) {
+			if *input.AssigneeID != user.ID {
+				go app.notifyTaskAssignment(id, *input.AssigneeID, user.ID)
+			}
 		}
 	}
 

@@ -186,6 +186,11 @@ func (app *App) handleCreatePost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Notify parent post author if this is a reply
+	if p.ParentPostID != nil && *p.ParentPostID > 0 {
+		go app.notifyPostReply(p.ID, user.ID)
+	}
+
 	// Broadcast via WebSocket
 	data, _ := json.Marshal(map[string]any{
 		"type":       "new_post",
@@ -235,9 +240,11 @@ func (app *App) handleTogglePostReaction(w http.ResponseWriter, r *http.Request)
 	`, id, user.ID, input.Reaction).Scan(&deleted)
 
 	if err != nil {
+		// New reaction added - notify post author
 		app.DB.Exec(`
 			INSERT INTO post_reactions (post_id, user_id, reaction) VALUES ($1, $2, $3)
 		`, id, user.ID, input.Reaction)
+		go app.notifyPostReaction(id, user.ID)
 	}
 
 	// Return updated like count

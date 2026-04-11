@@ -9,6 +9,7 @@ import { FileBrowser } from '../files/FileBrowser';
 import { FeedView } from '../feed/FeedView';
 import { TaskBoard } from '../tasks/TaskBoard';
 import { SearchView } from '../search/SearchView';
+import { NotificationBell } from "../notifications/NotificationBell";
 import { useWebSocket } from '../../hooks/useWebSocket';
 
 type View = 'chat' | 'feed' | 'files' | 'tasks' | 'search' | 'admin';
@@ -74,6 +75,10 @@ export function AppShell() {
               {tab.label}
             </TabButton>
           ))}
+          <div className="flex-1" />
+          <NotificationBell />
+          <span className="text-xs text-[var(--text-muted)]">{activeWorkspace?.name}</span>
+        </div>
           <div className="flex-1" />
           <span className="text-xs text-[var(--text-muted)]">{activeWorkspace?.name}</span>
         </div>
