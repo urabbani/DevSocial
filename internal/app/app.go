@@ -4,9 +4,10 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
-	"os"
 
-	"devsocial/internal/claw"
+	"devsocial/internal/ai"
+	"devsocial/internal/rag"
+	"devsocial/internal/storage"
 	"devsocial/internal/ws"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -18,17 +19,45 @@ type App struct {
 	BaseURL            string
 	RateLimiter        *IPRateLimiter
 	Hub                *ws.Hub
-	Claw               *claw.Manager
+	AI                 *ai.Provider
+	Storage            *storage.MinIO
+	RAG                *rag.Client
 }
 
 func New(db *sql.DB, githubClientID, githubClientSecret, baseURL string) *App {
-	binPath := os.Getenv("CLAW_BIN_PATH")
-	if binPath == "" {
-		binPath = claw.FindBinary()
+	// AI provider (LiteLLM)
+	aiProvider := ai.NewProvider()
+
+	// Load model from settings
+	var model string
+	err := db.QueryRow(`SELECT value FROM settings WHERE key = 'ai_model'`).Scan(&model)
+	if err == nil && model != "" {
+		aiProvider.SetModel(model)
+		log.Printf("AI model from settings: %s", model)
+	} else {
+		aiProvider.SetModel("claude-sonnet")
+		log.Printf("Using default AI model: claude-sonnet")
 	}
-	dataDir := os.Getenv("CLAW_DATA_DIR")
-	if dataDir == "" {
-		dataDir = "./data"
+
+	// File storage (MinIO)
+	var store *storage.MinIO
+	s, err := storage.NewMinIO()
+	if err != nil {
+		log.Printf("MinIO not available: %v — file features disabled", err)
+	} else {
+		store = s
+		log.Printf("MinIO storage connected")
+	}
+
+	// RAG (ChromaDB)
+	var ragClient *rag.Client
+	rc := rag.NewClient()
+	if err := rc.Health(); err != nil {
+		log.Printf("ChromaDB not available: %v — RAG features disabled", err)
+	} else {
+		rc.EnsureCollection("devsocial_docs")
+		ragClient = rc
+		log.Printf("ChromaDB connected")
 	}
 
 	app := &App{
@@ -38,13 +67,9 @@ func New(db *sql.DB, githubClientID, githubClientSecret, baseURL string) *App {
 		BaseURL:            baseURL,
 		RateLimiter:        NewIPRateLimiter(),
 		Hub:                ws.NewHub(),
-		Claw:               claw.NewManager(binPath, dataDir),
-	}
-
-	if claw.IsAvailable(binPath) {
-		log.Printf("claw-code found at %s", binPath)
-	} else {
-		log.Printf("claw-code not found at %s — AI features disabled", binPath)
+		AI:                 aiProvider,
+		Storage:            store,
+		RAG:                ragClient,
 	}
 
 	go app.Hub.Run()
@@ -71,6 +96,14 @@ func (app *App) Handler() http.Handler {
 
 	// WebSocket
 	mux.HandleFunc("GET /ws", app.requireAuth(app.handleWebSocket))
+
+	// Health check (no auth required)
+	mux.HandleFunc("GET /api/health", app.handleHealthCheck)
+
+	// Admin settings
+	mux.HandleFunc("GET /api/admin/settings", app.requireAuth(app.handleGetSettings))
+	mux.HandleFunc("PATCH /api/admin/settings", app.requireAuth(app.handleUpdateSettings))
+	mux.HandleFunc("GET /api/admin/models", app.requireAuth(app.handleGetModels))
 
 	// Workspaces
 	mux.HandleFunc("GET /api/workspaces", app.requireAuth(app.handleListWorkspaces))
@@ -106,15 +139,33 @@ func (app *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/workspaces/{id}/agents", app.requireAuth(app.handleCreateAgent))
 	mux.HandleFunc("PATCH /api/agents/{id}", app.requireAuth(app.handleUpdateAgent))
 
-	// Upload
+	// Files
 	mux.HandleFunc("POST /upload", app.requireAuth(app.handleUpload))
+	mux.HandleFunc("GET /api/workspaces/{id}/files", app.requireAuth(app.handleListFiles))
+	mux.HandleFunc("GET /api/files/{id}", app.requireAuth(app.handleGetFile))
+	mux.HandleFunc("DELETE /api/files/{id}", app.requireAuth(app.handleDeleteFile))
+
+	// Feed / Posts
+	mux.HandleFunc("GET /api/workspaces/{id}/feed", app.requireAuth(app.handleGetFeed))
+	mux.HandleFunc("POST /api/workspaces/{id}/feed", app.requireAuth(app.handleCreatePost))
+	mux.HandleFunc("GET /api/posts/{id}", app.requireAuth(app.handleGetPost))
+	mux.HandleFunc("POST /api/posts/{id}/reactions", app.requireAuth(app.handleTogglePostReaction))
+	mux.HandleFunc("GET /api/posts/{id}/replies", app.requireAuth(app.handleGetPostReplies))
+	mux.HandleFunc("DELETE /api/posts/{id}", app.requireAuth(app.handleDeletePost))
+
+	// Tasks
+	mux.HandleFunc("GET /api/workspaces/{id}/tasks", app.requireAuth(app.handleListTasks))
+	mux.HandleFunc("POST /api/workspaces/{id}/tasks", app.requireAuth(app.handleCreateTask))
+	mux.HandleFunc("PATCH /api/tasks/{id}", app.requireAuth(app.handleUpdateTask))
+	mux.HandleFunc("DELETE /api/tasks/{id}", app.requireAuth(app.handleDeleteTask))
+
+	// Search
+	mux.HandleFunc("GET /api/search", app.requireAuth(app.handleSearch))
 
 	return app.withSecurityHeaders(app.withUser(app.withRateLimit(mux)))
 }
 
 func (app *App) serveReactApp(w http.ResponseWriter, r *http.Request) {
-	// Serve the React SPA for all non-API, non-static routes
-	// The React app handles client-side routing
 	http.ServeFile(w, r, projectPath("web/dist/index.html"))
 }
 

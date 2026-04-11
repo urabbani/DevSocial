@@ -16,9 +16,13 @@ export function ChannelList() {
 
   const handleCreate = async () => {
     if (!newChannelName.trim()) return;
-    await createChannel(newChannelName.trim());
-    setNewChannelName('');
-    setShowCreate(false);
+    try {
+      await createChannel(newChannelName.trim());
+      setNewChannelName('');
+      setShowCreate(false);
+    } catch (_err) {
+      // Create failed, keep the dialog open
+    }
   };
 
   const textChannels = channels.filter((c) => c.type === 'text');

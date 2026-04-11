@@ -9,6 +9,7 @@ export function MessageView() {
   const { activeChannel } = useWorkspaceStore();
   const { messagesByChannel, loadingByChannel, fetchMessages } = useMessageStore();
   const bottomRef = useRef<HTMLDivElement>(null);
+  const prevLengthRef = useRef(0);
 
   const channelId = activeChannel?.id ?? 0;
   const messages = channelId ? messagesByChannel[channelId] || [] : [];
@@ -20,27 +21,29 @@ export function MessageView() {
     }
   }, [channelId, fetchMessages]);
 
-  // Auto-scroll to bottom on new messages
+  // Auto-scroll to bottom only when new messages arrive
   useEffect(() => {
-    if (messages.length > 0) {
+    if (messages.length > prevLengthRef.current) {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
+    prevLengthRef.current = messages.length;
   }, [messages.length]);
 
   const handleSend = useCallback(
     async (content: string) => {
       if (!channelId || !content.trim()) return;
-      // Post via REST API for now (WebSocket chat handling will be wired later)
       const res = await fetch(`/api/channels/${channelId}/messages`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: content.trim() }),
       });
-      if (res.ok) {
-        const msg = await res.json();
-        useMessageStore.getState().addMessage(channelId, msg);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: 'Failed to send' }));
+        throw new Error(body.error);
       }
+      await res.json();
+      // WebSocket broadcast will add the message
     },
     [channelId]
   );
@@ -63,7 +66,7 @@ export function MessageView() {
       <MessageList messages={messages} loading={loading} />
 
       <div ref={bottomRef} />
-      <MessageInput onSend={handleSend} channelId={channelId} />
+      <MessageInput onSend={handleSend} channelId={channelId} channelName={activeChannel.name} />
     </div>
   );
 }

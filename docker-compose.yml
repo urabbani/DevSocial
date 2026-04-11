@@ -17,6 +17,61 @@ services:
       timeout: 5s
       retries: 5
 
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: devsocial-litellm
+    restart: unless-stopped
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-devsocial-local}
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: devsocial-minio
+    restart: unless-stopped
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-devsocial}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-devsocial123}
+    volumes:
+      - minio-data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: devsocial-chromadb
+    restart: unless-stopped
+    ports:
+      - "${CHROMA_PORT:-8000}:8000"
+    volumes:
+      - chroma-data:/chroma/chroma
+    environment:
+      - ANONYMIZED_TELEMETRY=FALSE
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   app:
     build: .
     container_name: devsocial
@@ -26,20 +81,36 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      litellm:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgres://devsocial:${DB_PASSWORD:-devsocial}@postgres:5432/devsocial?sslmode=disable
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
       BASE_URL: ${BASE_URL:-http://localhost:8888}
-      CLAW_BIN_PATH: ${CLAW_BIN_PATH:-/usr/local/bin/claw}
-      CLAW_DATA_DIR: /data
+      # AI Provider
+      LITELLM_URL: http://litellm:4000
+      LITELLM_API_KEY: ${LITELLM_MASTER_KEY:-sk-devsocial-local}
+      # Storage
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-devsocial}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-devsocial123}
+      MINIO_BUCKET: ${MINIO_BUCKET:-devsocial}
+      MINIO_USE_SSL: "false"
+      # RAG
+      CHROMADB_URL: http://chromadb:8000
     volumes:
       - devsocial-data:/data
-      - uploads-data:/app/uploads
+      - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - .env
 
 volumes:
   postgres-data:
   devsocial-data:
-  uploads-data:
+  minio-data:
+  chroma-data:

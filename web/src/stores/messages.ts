@@ -10,9 +10,11 @@ interface MessageState {
 
   fetchMessages: (channelId: number, before?: number) => Promise<void>;
   addMessage: (channelId: number, message: Message) => void;
+  addAIChunk: (channelId: number, text: string) => void;
   removeMessage: (channelId: number, messageId: number) => void;
-  updateMessage: (channelId: number, messageId: number, content: string, contentHtml: string) => void;
+  updateMessage: (channelId: number, messageId: number, content: string) => void;
   handleWSMessage: (msg: WSMessage) => void;
+  handleWSDelete: (messageId: number) => void;
   setTyping: (channelId: number, userId: number, username: string) => void;
   clearTyping: (channelId: number, userId: number) => void;
 }
@@ -25,29 +27,64 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   fetchMessages: async (channelId: number, before?: number) => {
     set((s) => ({ loadingByChannel: { ...s.loadingByChannel, [channelId]: true } }));
-    const existing = get().messagesByChannel[channelId] || [];
-    const oldestId = before ?? (existing.length > 0 ? existing[0].id : 0);
-    const messages = await api.listMessages(channelId, oldestId || undefined);
-    const hasMore = messages.length >= 50;
-    // Messages come newest first from API, we want chronological
-    const chronological = [...messages].reverse();
-    set((s) => ({
-      messagesByChannel: {
-        ...s.messagesByChannel,
-        [channelId]: before ? [...chronological, ...existing] : chronological,
-      },
-      hasMoreByChannel: { ...s.hasMoreByChannel, [channelId]: hasMore },
-      loadingByChannel: { ...s.loadingByChannel, [channelId]: false },
-    }));
+    try {
+      const existing = get().messagesByChannel[channelId] || [];
+      const oldestId = before !== undefined ? before : (existing.length > 0 ? existing[0].id : undefined);
+      const messages = await api.listMessages(channelId, oldestId);
+      const hasMore = messages.length >= 50;
+      const chronological = [...messages].reverse();
+      set((s) => ({
+        messagesByChannel: {
+          ...s.messagesByChannel,
+          [channelId]: before !== undefined ? [...chronological, ...existing] : chronological,
+        },
+        hasMoreByChannel: { ...s.hasMoreByChannel, [channelId]: hasMore },
+        loadingByChannel: { ...s.loadingByChannel, [channelId]: false },
+      }));
+    } catch {
+      set((s) => ({ loadingByChannel: { ...s.loadingByChannel, [channelId]: false } }));
+    }
   },
 
   addMessage: (channelId: number, message: Message) => {
-    set((s) => ({
-      messagesByChannel: {
-        ...s.messagesByChannel,
-        [channelId]: [...(s.messagesByChannel[channelId] || []), message],
-      },
-    }));
+    set((s) => {
+      const existing = s.messagesByChannel[channelId] || [];
+      // Deduplicate: skip if message with same ID already exists
+      if (message.id > 0 && existing.some((m) => m.id === message.id)) {
+        return s;
+      }
+      return {
+        messagesByChannel: {
+          ...s.messagesByChannel,
+          [channelId]: [...existing, message],
+        },
+      };
+    });
+  },
+
+  // Accumulate AI streaming chunks into a single synthetic message
+  addAIChunk: (channelId: number, text: string) => {
+    set((s) => {
+      const existing = s.messagesByChannel[channelId] || [];
+      // Find or create the streaming message (id === -1 is our sentinel)
+      const streamIdx = existing.findIndex((m) => m.id === -1);
+      const updated = [...existing];
+      if (streamIdx >= 0) {
+        updated[streamIdx] = { ...updated[streamIdx], content: updated[streamIdx].content + text };
+      } else {
+        updated.push({
+          id: -1,
+          channel_id: channelId,
+          content: text,
+          is_ai: true,
+          is_system: false,
+          created_at: new Date().toISOString(),
+        });
+      }
+      return {
+        messagesByChannel: { ...s.messagesByChannel, [channelId]: updated },
+      };
+    });
   },
 
   removeMessage: (channelId: number, messageId: number) => {
@@ -59,12 +96,12 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     }));
   },
 
-  updateMessage: (channelId: number, messageId: number, content: string, contentHtml: string) => {
+  updateMessage: (channelId: number, messageId: number, content: string) => {
     set((s) => ({
       messagesByChannel: {
         ...s.messagesByChannel,
         [channelId]: (s.messagesByChannel[channelId] || []).map((m) =>
-          m.id === messageId ? { ...m, content, content_html: contentHtml, edited_at: new Date().toISOString() } : m
+          m.id === messageId ? { ...m, content, edited_at: new Date().toISOString() } : m
         ),
       },
     }));
@@ -74,8 +111,16 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     if (msg.type === 'message' && msg.message) {
       const m = msg.message as Message;
       get().addMessage(m.channel_id, m);
-    } else if (msg.type === 'message_delete' && msg.message_id) {
-      // Handled when we add this event type
+    }
+  },
+
+  handleWSDelete: (messageId: number) => {
+    const state = get();
+    for (const [channelId, msgs] of Object.entries(state.messagesByChannel)) {
+      if (msgs.some((m) => m.id === messageId)) {
+        get().removeMessage(Number(channelId), messageId);
+        break;
+      }
     }
   },
 
@@ -83,7 +128,6 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const typingUsers = { ...get().typingUsers };
     typingUsers[channelId] = new Map(typingUsers[channelId] || []);
     typingUsers[channelId].set(userId, username);
-    // Auto-clear after 3s
     setTimeout(() => get().clearTyping(channelId, userId), 3000);
     set({ typingUsers });
   },

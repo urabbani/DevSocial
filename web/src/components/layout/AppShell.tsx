@@ -1,14 +1,31 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuthStore } from '../../stores/auth';
 import { useWorkspaceStore } from '../../stores/workspace';
 import { WorkspaceSidebar } from '../layout/WorkspaceSidebar';
 import { ChannelList } from '../channels/ChannelList';
 import { MessageView } from '../messages/MessageView';
+import { AdminPanel } from '../admin/AdminPanel';
+import { FileBrowser } from '../files/FileBrowser';
+import { FeedView } from '../feed/FeedView';
+import { TaskBoard } from '../tasks/TaskBoard';
+import { SearchView } from '../search/SearchView';
 import { useWebSocket } from '../../hooks/useWebSocket';
+
+type View = 'chat' | 'feed' | 'files' | 'tasks' | 'search' | 'admin';
+
+const TABS: { key: View; label: string }[] = [
+  { key: 'chat', label: 'Chat' },
+  { key: 'feed', label: 'Feed' },
+  { key: 'tasks', label: 'Tasks' },
+  { key: 'files', label: 'Files' },
+  { key: 'search', label: 'Search' },
+  { key: 'admin', label: 'Admin' },
+];
 
 export function AppShell() {
   const { user, loading, fetchUser } = useAuthStore();
-  const { fetchWorkspaces } = useWorkspaceStore();
+  const { fetchWorkspaces, activeWorkspace } = useWorkspaceStore();
+  const [view, setView] = useState<View>('chat');
   useWebSocket();
 
   useEffect(() => {
@@ -48,7 +65,41 @@ export function AppShell() {
     <div className="flex h-full">
       <WorkspaceSidebar />
       <ChannelList />
-      <MessageView />
+
+      {/* View switcher tabs */}
+      <div className="flex flex-col flex-1 min-w-0">
+        <div className="flex items-center gap-1 px-4 py-1 border-b border-[var(--border)] bg-[var(--bg-secondary)] shrink-0">
+          {TABS.map((tab) => (
+            <TabButton key={tab.key} active={view === tab.key} onClick={() => setView(tab.key)}>
+              {tab.label}
+            </TabButton>
+          ))}
+          <div className="flex-1" />
+          <span className="text-xs text-[var(--text-muted)]">{activeWorkspace?.name}</span>
+        </div>
+
+        {view === 'chat' && <MessageView />}
+        {view === 'feed' && <FeedView />}
+        {view === 'tasks' && <TaskBoard />}
+        {view === 'files' && <FileBrowser />}
+        {view === 'search' && <SearchView />}
+        {view === 'admin' && <AdminPanel onClose={() => setView('chat')} />}
+      </div>
     </div>
+  );
+}
+
+function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-3 py-1.5 text-xs font-medium rounded transition-colors ${
+        active
+          ? 'bg-[var(--bg-tertiary)] text-white'
+          : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]'
+      }`}
+    >
+      {children}
+    </button>
   );
 }

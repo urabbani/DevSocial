@@ -4,35 +4,72 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
 
+const (
+	pongWait   = 60 * time.Second
+	pingPeriod = (pongWait * 9) / 10
+	maxMsgSize = 4096
+)
+
 // WebSocket message types
 type WSMessage struct {
-	Type      string `json:"type"`
-	ChannelID int64  `json:"channel_id,omitempty"`
-	UserID    int64  `json:"user_id,omitempty"`
-	Content   string `json:"content,omitempty"`
-	Status    string `json:"status,omitempty"`
-	Message   any    `json:"message,omitempty"`
+	Type       string  `json:"type"`
+	ChannelID  int64   `json:"channel_id,omitempty"`
+	UserID     int64   `json:"user_id,omitempty"`
+	Content    string  `json:"content,omitempty"`
+	Status     string  `json:"status,omitempty"`
+	Message    any     `json:"message,omitempty"`
 	ChannelIDs []int64 `json:"channel_ids,omitempty"`
 }
 
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	CheckOrigin:     func(r *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return false
+		}
+		// Allow connections from the same host
+		host := r.Host
+		if host == "" {
+			return false
+		}
+		// Strip port from origin for comparison
+		originHost := origin
+		if idx := strings.LastIndex(origin, ":"); idx > 0 {
+			// Check if it's a port (not part of IPv6)
+			afterColon := origin[idx+1:]
+			allDigits := true
+			for _, c := range afterColon {
+				if c < '0' || c > '9' {
+					allDigits = false
+					break
+				}
+			}
+			if allDigits {
+				originHost = origin[:idx]
+			}
+		}
+		return strings.EqualFold(originHost, strings.Split(host, ":")[0])
+	},
 }
 
 // Client represents a single WebSocket connection.
 type Client struct {
-	hub     *Hub
-	conn    *websocket.Conn
-	send    chan []byte
-	userID  int64
-	channels map[int64]bool // subscribed channels
+	hub         *Hub
+	conn        *websocket.Conn
+	send        chan []byte
+	userID      int64
+	channels    map[int64]bool // subscribed channels
+	workspaces  map[int64]bool // subscribed workspaces
+	mu          sync.RWMutex   // protects channels and workspaces
 }
 
 // Hub maintains the set of active clients and broadcasts messages.
@@ -48,8 +85,8 @@ func NewHub() *Hub {
 	return &Hub{
 		clients:    make(map[*Client]bool),
 		broadcast:  make(chan []byte, 256),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
+		register:   make(chan *Client, 16),
+		unregister: make(chan *Client, 16),
 	}
 }
 
@@ -71,14 +108,17 @@ func (h *Hub) Run() {
 
 		case message := <-h.broadcast:
 			h.mu.RLock()
+			targets := make([]*Client, 0, len(h.clients))
 			for client := range h.clients {
+				targets = append(targets, client)
+			}
+			h.mu.RUnlock()
+			for _, client := range targets {
 				select {
 				case client.send <- message:
 				default:
-					// Client send buffer full, skip
 				}
 			}
-			h.mu.RUnlock()
 		}
 	}
 }
@@ -86,13 +126,43 @@ func (h *Hub) Run() {
 // BroadcastToChannel sends a message to all clients subscribed to a specific channel.
 func (h *Hub) BroadcastToChannel(channelID int64, message []byte) {
 	h.mu.RLock()
-	defer h.mu.RUnlock()
+	targets := make([]*Client, 0, len(h.clients))
 	for client := range h.clients {
-		if client.channels[channelID] {
-			select {
-			case client.send <- message:
-			default:
-			}
+		client.mu.RLock()
+		subscribed := client.channels[channelID]
+		client.mu.RUnlock()
+		if subscribed {
+			targets = append(targets, client)
+		}
+	}
+	h.mu.RUnlock()
+
+	for _, client := range targets {
+		select {
+		case client.send <- message:
+		default:
+		}
+	}
+}
+
+// BroadcastToWorkspace sends a message to all clients in a workspace.
+func (h *Hub) BroadcastToWorkspace(workspaceID int64, message []byte) {
+	h.mu.RLock()
+	targets := make([]*Client, 0, len(h.clients))
+	for client := range h.clients {
+		client.mu.RLock()
+		subscribed := client.workspaces[workspaceID]
+		client.mu.RUnlock()
+		if subscribed {
+			targets = append(targets, client)
+		}
+	}
+	h.mu.RUnlock()
+
+	for _, client := range targets {
+		select {
+		case client.send <- message:
+		default:
 		}
 	}
 }
@@ -106,11 +176,12 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, userID int64) {
 	}
 
 	client := &Client{
-		hub:      h,
-		conn:     conn,
-		send:     make(chan []byte, 256),
-		userID:   userID,
-		channels: make(map[int64]bool),
+		hub:        h,
+		conn:       conn,
+		send:       make(chan []byte, 256),
+		userID:     userID,
+		channels:   make(map[int64]bool),
+		workspaces: make(map[int64]bool),
 	}
 
 	h.register <- client
@@ -125,6 +196,13 @@ func (c *Client) readPump() {
 		c.conn.Close()
 	}()
 
+	c.conn.SetReadLimit(maxMsgSize)
+	c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.conn.SetPingHandler(func(appData string) error {
+		c.conn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
+
 	for {
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
@@ -138,12 +216,22 @@ func (c *Client) readPump() {
 
 		switch wsMsg.Type {
 		case "subscribe":
+			c.mu.Lock()
 			for _, chID := range wsMsg.ChannelIDs {
 				c.channels[chID] = true
 			}
+			c.mu.Unlock()
+
+		case "subscribe_workspace":
+			c.mu.Lock()
+			if wsMsg.ChannelIDs != nil {
+				for _, wsID := range wsMsg.ChannelIDs {
+					c.workspaces[wsID] = true
+				}
+			}
+			c.mu.Unlock()
 
 		case "typing":
-			// Broadcast typing indicator to other clients in the channel
 			typingMsg, _ := json.Marshal(WSMessage{
 				Type:      "typing",
 				ChannelID: wsMsg.ChannelID,
@@ -157,23 +245,36 @@ func (c *Client) readPump() {
 				UserID: c.userID,
 				Status: wsMsg.Status,
 			})
-			c.hub.broadcast <- presenceMsg
+			select {
+			case c.hub.broadcast <- presenceMsg:
+			default:
+			}
 		}
 	}
 }
 
 func (c *Client) writePump() {
-	defer c.conn.Close()
+	ticker := time.NewTicker(pingPeriod)
+	defer func() {
+		ticker.Stop()
+		// Don't close conn here — readPump owns the close
+	}()
 
 	for {
-		message, ok := <-c.send
-		if !ok {
-			c.conn.WriteMessage(websocket.CloseMessage, []byte{})
-			return
-		}
+		select {
+		case message, ok := <-c.send:
+			if !ok {
+				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+			if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
+				return
+			}
 
-		if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
-			break
+		case <-ticker.C:
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
 		}
 	}
 }

@@ -9,22 +9,30 @@ export interface WSMessage {
   channel_ids?: number[];
   user_id?: number;
   content?: string;
+  text?: string;
   status?: string;
   message?: any;
   message_id?: number;
 }
 
+const MAX_RECONNECT_ATTEMPTS = 20;
+
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectDelay = useRef(2000);
+  const reconnectAttempts = useRef(0);
   const subscribedChannels = useRef<Set<number>>(new Set());
 
   const connect = useCallback(() => {
+    if (reconnectAttempts.current >= MAX_RECONNECT_ATTEMPTS) return;
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
 
     ws.onopen = () => {
-      // Subscribe to all active workspace channels
+      reconnectDelay.current = 2000;
+      reconnectAttempts.current = 0;
       const channels = useWorkspaceStore.getState().channels || [];
       if (channels.length > 0) {
         ws.send(JSON.stringify({
@@ -44,31 +52,28 @@ export function useWebSocket() {
           case 'message':
             msgStore.handleWSMessage(msg);
             break;
+          case 'message_delete':
+            if (msg.message_id) {
+              msgStore.handleWSDelete(msg.message_id);
+            }
+            break;
           case 'typing':
             if (msg.channel_id && msg.user_id) {
               const authStore = useAuthStore.getState();
               if (msg.user_id !== authStore.user?.id) {
-                // Fetch username from message store or cache
                 msgStore.setTyping(msg.channel_id, msg.user_id, 'User');
               }
             }
             break;
           case 'presence':
-            // Could update user presence indicator
             break;
-          case 'ai_chunk':
-            // Stream AI response chunks
-            if (msg.channel_id && msg.content) {
-              msgStore.addMessage(msg.channel_id, {
-                id: 0,
-                channel_id: msg.channel_id,
-                content: msg.content,
-                is_ai: true,
-                is_system: false,
-                created_at: new Date().toISOString(),
-              });
+          case 'ai_chunk': {
+            const text = msg.text ?? msg.content;
+            if (msg.channel_id && text) {
+              msgStore.addAIChunk(msg.channel_id, text);
             }
             break;
+          }
         }
       } catch {
         // Ignore parse errors
@@ -76,8 +81,10 @@ export function useWebSocket() {
     };
 
     ws.onclose = () => {
-      // Auto-reconnect with exponential backoff
-      reconnectTimer.current = setTimeout(() => connect(), 2000) as unknown as ReturnType<typeof setTimeout>;
+      const delay = reconnectDelay.current;
+      reconnectDelay.current = Math.min(delay * 1.5, 30000);
+      reconnectAttempts.current++;
+      reconnectTimer.current = setTimeout(() => connect(), delay) as unknown as ReturnType<typeof setTimeout>;
     };
 
     wsRef.current = ws;
@@ -85,27 +92,20 @@ export function useWebSocket() {
 
   // Subscribe to new channels when they change
   useEffect(() => {
-    const channels = useWorkspaceStore.getState().channels || [];
-    const newChannelIds = channels
-      .map((c) => c.id)
-      .filter((id) => !subscribedChannels.current.has(id));
+    const unsub = useWorkspaceStore.subscribe((state) => {
+      const channels = state.channels || [];
+      const newChannelIds = channels
+        .map((c) => c.id)
+        .filter((id) => !subscribedChannels.current.has(id));
 
-    if (newChannelIds.length > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({ type: 'subscribe', channel_ids: newChannelIds })
-      );
-      newChannelIds.forEach((id) => subscribedChannels.current.add(id));
-    }
-  });
-
-  const sendMessage = useCallback((channelId: number, content: string) => {
-    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
-    wsRef.current.send(JSON.stringify({ type: 'chat', channel_id: channelId, content }));
-  }, []);
-
-  const sendTyping = useCallback((channelId: number) => {
-    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
-    wsRef.current.send(JSON.stringify({ type: 'typing', channel_id: channelId }));
+      if (newChannelIds.length > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({ type: 'subscribe', channel_ids: newChannelIds })
+        );
+        newChannelIds.forEach((id) => subscribedChannels.current.add(id));
+      }
+    });
+    return unsub;
   }, []);
 
   useEffect(() => {
@@ -113,35 +113,7 @@ export function useWebSocket() {
     return () => {
       wsRef.current?.close();
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current as unknown as number);
+      subscribedChannels.current.clear();
     };
   }, [connect]);
-
-  return { sendMessage, sendTyping };
-}
-
-export async function postMessage(channelId: number, content: string) {
-  const res = await fetch('/api/channels/' + channelId + '/messages', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: 'Failed to send message' }));
-    throw new Error(body.error);
-  }
-  return res.json();
-}
-
-export async function sendMessageViaAPI(channelId: number, content: string, isAI?: boolean) {
-  // This will be handled by the WebSocket flow in production.
-  // For now, post directly via REST.
-  const res = await fetch('/api/channels/' + channelId + '/messages', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, is_ai: isAI }),
-  });
-  if (!res.ok) throw new Error('Failed to send message');
-  return res.json();
 }

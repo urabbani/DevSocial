@@ -19,8 +19,9 @@ func InitDB(dsn string) (*sql.DB, error) {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
 	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
+	db.SetMaxIdleConns(25)
 	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetConnMaxIdleTime(1 * time.Minute)
 
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("ping db: %w", err)
@@ -159,8 +160,14 @@ func (app *App) CleanExpiredSessions() error {
 // --- Workspaces ---
 
 func (app *App) CreateWorkspace(name, description, slug string, ownerID int64) (*Workspace, error) {
+	tx, err := app.DB.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
 	ws := &Workspace{}
-	err := app.DB.QueryRow(`
+	err = tx.QueryRow(`
 		INSERT INTO workspaces (name, description, slug)
 		VALUES ($1, $2, $3)
 		RETURNING id, name, description, slug, created_at
@@ -169,16 +176,14 @@ func (app *App) CreateWorkspace(name, description, slug string, ownerID int64) (
 		return nil, err
 	}
 
-	// Add owner as member
-	if _, err := app.DB.Exec(`
+	if _, err := tx.Exec(`
 		INSERT INTO workspace_members (workspace_id, user_id, role)
 		VALUES ($1, $2, 'owner')
 	`, ws.ID, ownerID); err != nil {
 		return nil, err
 	}
 
-	// Create default channels
-	if _, err := app.DB.Exec(`
+	if _, err := tx.Exec(`
 		INSERT INTO channels (workspace_id, name, description, type, position)
 		VALUES ($1, 'general', 'General discussion', 'text', 0),
 		       ($1, 'ai', 'AI assistant', 'ai', 1)
@@ -186,7 +191,7 @@ func (app *App) CreateWorkspace(name, description, slug string, ownerID int64) (
 		return nil, err
 	}
 
-	return ws, nil
+	return ws, tx.Commit()
 }
 
 func (app *App) GetWorkspace(id int64) (*Workspace, error) {
@@ -410,6 +415,9 @@ func (app *App) DeleteChannel(id int64) error {
 // --- Messages ---
 
 func (app *App) CreateMessage(channelID int64, authorID *int64, content, contentHTML string, isAI, isSystem bool) (*Message, error) {
+	if contentHTML == "" {
+		contentHTML = content
+	}
 	msg := &Message{}
 	err := app.DB.QueryRow(`
 		INSERT INTO messages (channel_id, author_id, content, content_html, is_ai, is_system)
@@ -428,11 +436,12 @@ func (app *App) CreateMessage(channelID int64, authorID *int64, content, content
 func (app *App) GetMessage(id int64) (*Message, error) {
 	msg := &Message{}
 	var authorID sql.NullInt64
+	var contentHTML sql.NullString
 	var editedAt sql.NullTime
 	err := app.DB.QueryRow(`
 		SELECT id, channel_id, author_id, content, content_html, is_ai, is_system, created_at, edited_at
 		FROM messages WHERE id = $1
-	`, id).Scan(&msg.ID, &msg.ChannelID, &authorID, &msg.Content, &msg.ContentHTML,
+	`, id).Scan(&msg.ID, &msg.ChannelID, &authorID, &msg.Content, &contentHTML,
 		&msg.IsAI, &msg.IsSystem, &msg.CreatedAt, &editedAt,
 	)
 	if err != nil {
@@ -440,6 +449,9 @@ func (app *App) GetMessage(id int64) (*Message, error) {
 	}
 	if authorID.Valid {
 		msg.AuthorID = &authorID.Int64
+	}
+	if contentHTML.Valid {
+		msg.ContentHTML = contentHTML.String
 	}
 	if editedAt.Valid {
 		msg.EditedAt = &editedAt.Time
@@ -500,16 +512,33 @@ func (app *App) ListChannelMessagesWithAuthors(channelID int64, beforeID int64, 
 	}
 
 	// Batch load authors
-	authorIDs := map[int64]bool{}
+	authorIDs := make([]int64, 0)
+	seen := map[int64]bool{}
 	for _, m := range messages {
-		if m.AuthorID != nil {
-			authorIDs[*m.AuthorID] = true
+		if m.AuthorID != nil && !seen[*m.AuthorID] {
+			authorIDs = append(authorIDs, *m.AuthorID)
+			seen[*m.AuthorID] = true
 		}
 	}
 	authorCache := map[int64]*User{}
-	for id := range authorIDs {
-		if u, err := app.GetUserByID(id); err == nil {
-			authorCache[id] = u
+	if len(authorIDs) > 0 {
+		placeholders := buildPlaceholders(len(authorIDs))
+		args := make([]any, len(authorIDs))
+		for i, id := range authorIDs {
+			args[i] = id
+		}
+		rows, err := app.DB.Query(`
+			SELECT id, github_id, username, display_name, avatar_url, bio, created_at
+			FROM users WHERE id IN (`+placeholders+`)
+		`, args...)
+		if err == nil {
+			for rows.Next() {
+				u := &User{}
+				if rows.Scan(&u.ID, &u.GitHubID, &u.Username, &u.DisplayName, &u.AvatarURL, &u.Bio, &u.CreatedAt) == nil {
+					authorCache[u.ID] = u
+				}
+			}
+			rows.Close()
 		}
 	}
 	for _, m := range messages {
@@ -571,24 +600,30 @@ func (app *App) DeleteMessage(id, userID int64) error {
 }
 
 func (app *App) ToggleReaction(messageID, userID int64, reaction string) error {
-	var count int
-	err := app.DB.QueryRow(`
-		SELECT COUNT(*) FROM message_reactions WHERE message_id = $1 AND user_id = $2 AND reaction = $3
-	`, messageID, userID, reaction).Scan(&count)
+	tx, err := app.DB.Begin()
 	if err != nil {
 		return err
 	}
+	defer tx.Rollback()
 
-	if count > 0 {
-		_, err = app.DB.Exec(`
-			DELETE FROM message_reactions WHERE message_id = $1 AND user_id = $2 AND reaction = $3
+	var deleted bool
+	err = tx.QueryRow(`
+		DELETE FROM message_reactions
+		WHERE message_id = $1 AND user_id = $2 AND reaction = $3
+		RETURNING true
+	`, messageID, userID, reaction).Scan(&deleted)
+	if err != nil {
+		// No row to delete — insert instead
+		_, err = tx.Exec(`
+			INSERT INTO message_reactions (message_id, user_id, reaction)
+			VALUES ($1, $2, $3)
+			ON CONFLICT DO NOTHING
 		`, messageID, userID, reaction)
-	} else {
-		_, err = app.DB.Exec(`
-			INSERT INTO message_reactions (message_id, user_id, reaction) VALUES ($1, $2, $3)
-		`, messageID, userID, reaction)
+		if err != nil {
+			return err
+		}
 	}
-	return err
+	return tx.Commit()
 }
 
 func (app *App) GetMessageReactions(messageID int64) ([]Reaction, error) {
@@ -694,13 +729,17 @@ func (app *App) scanMessages(rows *sql.Rows) ([]*Message, error) {
 	for rows.Next() {
 		msg := &Message{}
 		var authorID sql.NullInt64
+		var contentHTML sql.NullString
 		var editedAt sql.NullTime
-		if err := rows.Scan(&msg.ID, &msg.ChannelID, &authorID, &msg.Content, &msg.ContentHTML,
+		if err := rows.Scan(&msg.ID, &msg.ChannelID, &authorID, &msg.Content, &contentHTML,
 			&msg.IsAI, &msg.IsSystem, &msg.CreatedAt, &editedAt); err != nil {
 			return nil, err
 		}
 		if authorID.Valid {
 			msg.AuthorID = &authorID.Int64
+		}
+		if contentHTML.Valid {
+			msg.ContentHTML = contentHTML.String
 		}
 		if editedAt.Valid {
 			msg.EditedAt = &editedAt.Time

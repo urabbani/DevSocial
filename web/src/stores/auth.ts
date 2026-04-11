@@ -22,7 +22,11 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   logout: async () => {
-    await fetch('/auth/logout', { method: 'POST', credentials: 'include' });
+    try {
+      await fetch('/auth/logout', { method: 'POST', credentials: 'include' });
+    } catch {
+      // Clear local state regardless
+    }
     set({ user: null });
   },
 }));

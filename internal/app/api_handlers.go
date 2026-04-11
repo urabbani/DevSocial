@@ -1,14 +1,15 @@
 package app
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
-	"devsocial/internal/claw"
+	"devsocial/internal/ai"
 )
 
 // --- JSON helpers ---
@@ -291,7 +292,6 @@ func (app *App) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 
 	var input struct {
 		Content string `json:"content"`
-		IsAI     bool   `json:"is_ai,omitempty"`
 	}
 	if err := readJSON(r, &input); err != nil || input.Content == "" {
 		writeError(w, http.StatusBadRequest, "content is required")
@@ -303,12 +303,7 @@ func (app *App) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 		contentHTML = input.Content
 	}
 
-	var authorID *int64
-	if !input.IsAI {
-		authorID = &user.ID
-	}
-
-	msg, err := app.CreateMessage(channelID, authorID, input.Content, contentHTML, input.IsAI, false)
+	msg, err := app.CreateMessage(channelID, &user.ID, input.Content, contentHTML, false, false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create message")
 		return
@@ -326,8 +321,8 @@ func (app *App) handleCreateMessage(w http.ResponseWriter, r *http.Request) {
 	})
 	app.Hub.BroadcastToChannel(channelID, msgBytes)
 
-	// If this is an AI channel and the message @mentions an agent, trigger claw-code
-	if !input.IsAI && app.isAIChannel(channelID) {
+	// If this is an AI channel, trigger claw-code
+	if app.isAIChannel(channelID) {
 		go app.processAIClaim(channelID, msg)
 	}
 
@@ -538,11 +533,11 @@ func (app *App) isAIChannel(channelID int64) bool {
 	return ch.Type == "ai"
 }
 
-// processAIClaim runs claw-code in a goroutine and streams the response.
+// processAIClaim runs an AI completion via LiteLLM and streams the response.
 func (app *App) processAIClaim(channelID int64, userMsg *Message) {
-	if !claw.IsAvailable(app.Claw.BinPath()) {
-		// Post a system message that AI is not available
-		sysContent := "AI assistant is not available. Check that claw-code is installed and the CLAW_BIN_PATH env var is set."
+	// Check AI provider is available
+	if app.AI == nil {
+		sysContent := "AI assistant is not available. Check that LiteLLM is configured."
 		html, _ := RenderMarkdown(sysContent)
 		sysMsg, _ := app.CreateMessage(channelID, nil, sysContent, html, false, true)
 		if sysMsg != nil {
@@ -555,43 +550,60 @@ func (app *App) processAIClaim(channelID int64, userMsg *Message) {
 	// Gather recent chat context
 	messages, _ := app.ListChannelMessages(channelID, 0, 50)
 
-	// Build chat messages for context
-	var chatMessages []claw.ChatMessage
+	// Build chat history for the AI
+	var history []ai.HistoryMessage
 	for _, m := range messages {
-		cm := claw.ChatMessage{
+		hm := ai.HistoryMessage{
 			ID:             m.ID,
 			Content:        m.Content,
 			IsAI:           m.IsAI,
 			AuthorUsername: "user",
 		}
 		if m.Author != nil {
-			cm.AuthorUsername = m.Author.Username
+			hm.AuthorUsername = m.Author.Username
 		}
-		chatMessages = append(chatMessages, cm)
+		history = append(history, hm)
 	}
 
-	// Get workspace ID from channel
+	// Get workspace and channel info
 	ch, _ := app.GetChannel(channelID)
 	workspaceID := int64(0)
-	if ch != nil {
-		workspaceID = ch.WorkspaceID
-	}
-
-	// Get system prompt from agents
-	agents, _ := app.ListWorkspaceAgents(workspaceID)
-	systemPrompt := ""
-	if len(agents) > 0 {
-		systemPrompt = agents[0].SystemPrompt
-	}
-
-	// Build the prompt for claw-code
 	chName := "general"
 	if ch != nil {
+		workspaceID = ch.WorkspaceID
 		chName = ch.Name
 	}
-	prompt := claw.BuildPrompt(chName, chatMessages, systemPrompt)
 
-	// Create a system message that AI is thinking
+	// Build system prompt
+	agents, _ := app.ListWorkspaceAgents(workspaceID)
+	basePrompt := ""
+	if len(agents) > 0 && agents[0].SystemPrompt != "" {
+		basePrompt = agents[0].SystemPrompt
+	}
+	systemPrompt := basePrompt + fmt.Sprintf(
+		"\n\nYou are an AI assistant in the #%s channel of DevSocial, a collaborative platform for developers and researchers. Help the team with coding, data analysis, document review, and problem-solving. Be concise and actionable.",
+		chName,
+	)
+
+	// Load max context setting
+	maxMessages := 50
+	if val := app.getAISetting("ai_max_context_messages", ""); val != "" {
+		if n, err := strconv.Atoi(val); err == nil && n > 0 {
+			maxMessages = n
+		}
+	}
+
+	chatMessages := ai.BuildChatMessages(systemPrompt, history, maxMessages)
+
+	// Get temperature from settings
+	temperature := 0.7
+	if val := app.getAISetting("ai_temperature", ""); val != "" {
+		if t, err := strconv.ParseFloat(val, 64); err == nil {
+			temperature = t
+		}
+	}
+
+	// Show "thinking" indicator
 	thinkingContent := "AI is processing your request..."
 	thinkingHTML, _ := RenderMarkdown(thinkingContent)
 	thinkingMsg, _ := app.CreateMessage(channelID, nil, thinkingContent, thinkingHTML, true, true)
@@ -600,13 +612,13 @@ func (app *App) processAIClaim(channelID int64, userMsg *Message) {
 		app.Hub.BroadcastToChannel(channelID, data)
 	}
 
-	// Send prompt to claw-code
-	client := app.Claw.GetOrCreate(workspaceID)
-	ctx := context.Background()
+	// Stream response from LiteLLM
+	model := app.AI.GetModel()
+	log.Printf("[ai] sending request to model %s for channel %d", model, channelID)
 
-	// Stream response chunks back to the channel
+	// Use streaming endpoint
 	var aiContent strings.Builder
-	_, sendErr := client.SendMessage(ctx, prompt, func(chunk string) {
+	_, sendErr := app.AI.SendMessageStream(model, chatMessages, temperature, func(chunk string) {
 		chunkData, _ := json.Marshal(WSMessageOut{
 			Type:      "ai_chunk",
 			ChannelID: channelID,
@@ -616,13 +628,30 @@ func (app *App) processAIClaim(channelID int64, userMsg *Message) {
 		aiContent.WriteString(chunk)
 	})
 
+	// Clear the streaming placeholder (id=-1 on frontend)
+	if aiContent.Len() > 0 {
+		clearData, _ := json.Marshal(WSMessageOut{
+			Type:      "ai_chunk",
+			ChannelID: channelID,
+			Text:      "",
+		})
+		app.Hub.BroadcastToChannel(channelID, clearData)
+	}
+
 	if sendErr != nil {
+		log.Printf("[ai] error: %v", sendErr)
 		errContent := fmt.Sprintf("AI error: %v", sendErr)
 		errHTML, _ := RenderMarkdown(errContent)
 		errMsg, _ := app.CreateMessage(channelID, nil, errContent, errHTML, true, true)
 		if errMsg != nil {
 			data, _ := json.Marshal(WSMessageOut{Type: "message", Message: errMsg})
 			app.Hub.BroadcastToChannel(channelID, data)
+		}
+		// Delete thinking message
+		if thinkingMsg != nil {
+			app.DB.Exec(`DELETE FROM messages WHERE id = $1`, thinkingMsg.ID)
+			delData, _ := json.Marshal(WSMessageOut{Type: "message_delete", MessageID: thinkingMsg.ID})
+			app.Hub.BroadcastToChannel(channelID, delData)
 		}
 		return
 	}
@@ -636,25 +665,22 @@ func (app *App) processAIClaim(channelID int64, userMsg *Message) {
 			data, _ := json.Marshal(WSMessageOut{Type: "message", Message: aiMsg})
 			app.Hub.BroadcastToChannel(channelID, data)
 		}
+	} else {
+		fallbackContent := "AI returned an empty response."
+		fallbackHTML, _ := RenderMarkdown(fallbackContent)
+		aiMsg, _ := app.CreateMessage(channelID, nil, fallbackContent, fallbackHTML, true, true)
+		if aiMsg != nil {
+			data, _ := json.Marshal(WSMessageOut{Type: "message", Message: aiMsg})
+			app.Hub.BroadcastToChannel(channelID, data)
+		}
 	}
 
 	// Delete the "thinking" placeholder message
 	if thinkingMsg != nil {
-		app.DeleteMessage(thinkingMsg.ID, 0) // author_id=0 bypasses ownership check
-		delData, _ := json.Marshal(WSMessageOut{
-			Type:      "message_delete",
-			MessageID: thinkingMsg.ID,
-		})
+		app.DB.Exec(`DELETE FROM messages WHERE id = $1`, thinkingMsg.ID)
+		delData, _ := json.Marshal(WSMessageOut{Type: "message_delete", MessageID: thinkingMsg.ID})
 		app.Hub.BroadcastToChannel(channelID, delData)
 	}
-}
-
-// --- Upload ---
-
-func (app *App) handleUpload(w http.ResponseWriter, r *http.Request) {
-	// TODO: implement image upload (reuse existing logic from old handlers.go)
-	writeError(w, http.StatusNotImplemented, "upload not yet implemented")
-	_ = fmt.Sprintf("upload handler placeholder")
 }
 
 // --- WebSocket ---

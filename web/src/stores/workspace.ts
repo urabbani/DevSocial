@@ -22,22 +22,28 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   loading: false,
 
   fetchWorkspaces: async () => {
-    const workspaces = await api.listWorkspaces();
-    set({ workspaces });
-    // Auto-select first workspace if none selected
-    if (!get().activeWorkspace && workspaces.length > 0) {
-      get().setActiveWorkspace(workspaces[0]);
+    try {
+      const workspaces = await api.listWorkspaces();
+      set({ workspaces });
+      if (!get().activeWorkspace && workspaces.length > 0) {
+        get().setActiveWorkspace(workspaces[0]);
+      }
+    } catch {
+      // Will retry on next attempt
     }
   },
 
   setActiveWorkspace: async (ws: Workspace | null) => {
     set({ activeWorkspace: ws, activeChannel: null, channels: [], loading: !!ws });
     if (ws) {
-      const channels = await api.listChannels(ws.id);
-      set({ channels, loading: false });
-      // Auto-select #general
-      const general = channels.find((c) => c.name === 'general');
-      if (general) set({ activeChannel: general });
+      try {
+        const channels = await api.listChannels(ws.id);
+        set({ channels, loading: false });
+        const general = channels.find((c) => c.name === 'general');
+        if (general) set({ activeChannel: general });
+      } catch {
+        set({ loading: false });
+      }
     }
   },
 
