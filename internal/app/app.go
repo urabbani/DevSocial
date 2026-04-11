@@ -134,6 +134,7 @@ func (app *App) Handler() http.Handler {
 	// Static files + uploads
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir(projectPath("static")))))
 	mux.Handle("GET /uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(projectPath("uploads")))))
+	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir(projectPath("web/dist/assets")))))
 
 	// React app — serve index.html for all non-API routes
 	mux.HandleFunc("GET /", app.serveReactApp)
