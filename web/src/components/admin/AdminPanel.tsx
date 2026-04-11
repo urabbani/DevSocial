@@ -50,7 +50,7 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
     setError('');
     setSuccess('');
     try {
-      const result = await api.reindexEmbeddings();
+      await api.reindexEmbeddings();
       setSuccess('Re-indexing started. This may take several minutes.');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to start re-indexing');

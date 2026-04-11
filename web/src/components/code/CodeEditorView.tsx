@@ -17,7 +17,6 @@ export function CodeEditorView() {
     editors,
     fetchDocuments,
     createDocument,
-    updateDocument,
     setActiveDocument,
     clearViewers,
   } = useDocumentStore();

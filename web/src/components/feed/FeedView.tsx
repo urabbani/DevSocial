@@ -130,7 +130,6 @@ function PostCard({
   onToggleReaction,
   onDelete,
   onToggleReplies,
-  onReply,
   onReplySubmit,
   replyContent,
   onReplyChange,

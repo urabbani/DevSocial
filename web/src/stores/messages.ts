@@ -143,22 +143,24 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   },
 
   handleWSMessage: (msg: WSMessage) => {
+    const cid = msg.channel_id;
+    if (!cid) return;
+
     if (msg.type === 'message' && msg.message) {
       const m = msg.message as Message;
       get().addMessage(m.channel_id, m);
     } else if (msg.type === 'ai_chunk' && msg.text !== undefined) {
       if (msg.text === '') {
-        // Empty text signals clear
-        get().clearAIStream(msg.channel_id);
+        get().clearAIStream(cid);
       } else {
-        get().addAIChunk(msg.channel_id, msg.text);
+        get().addAIChunk(cid, msg.text);
       }
     } else if (msg.type === 'ai_stream_done') {
-      get().clearAIStream(msg.channel_id);
+      get().clearAIStream(cid);
     } else if (msg.type === 'tool_call' && msg.tool_call) {
-      get().upsertToolCall(msg.channel_id, msg.tool_call);
+      get().upsertToolCall(cid, msg.tool_call);
     } else if (msg.type === 'tool_result' && msg.tool_call) {
-      get().upsertToolCall(msg.channel_id, msg.tool_call);
+      get().upsertToolCall(cid, msg.tool_call);
     }
   },
 

@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react';
-import Editor from '@monaco-editor/react';
+import { useRef } from 'react';
+import Editor, { type OnMount } from '@monaco-editor/react';
 
 interface CodeEditorProps {
   value: string;
@@ -43,24 +43,20 @@ export function CodeEditor({
   readOnly = false,
   height = '100%',
 }: CodeEditorProps) {
-  const editorRef = useRef<any>(null);
+  const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
 
   const monacoLanguage = LANGUAGE_MAP[language] || 'plaintext';
 
-  const handleEditorDidMount = (editor: any) => {
+  const handleEditorDidMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
 
     // Add keyboard shortcuts
-    editor.addCommand(window.monaco.KeyMod.CtrlCmd | window.monaco.KeyCode.KeyS, () => {
-      // Save is handled by the parent component with auto-save
-      // Just trigger a save event
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       editor.trigger('save', 'save', {});
     });
 
-    editor.addCommand(window.monaco.KeyMod.CtrlCmd | window.monaco.KeyCode.Enter, () => {
-      // Run code - trigger custom event
-      const event = new CustomEvent('run-code');
-      window.dispatchEvent(event);
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
+      window.dispatchEvent(new CustomEvent('run-code'));
     });
   };
 
