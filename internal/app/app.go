@@ -7,6 +7,7 @@ import (
 
 	"devsocial/internal/ai"
 	"devsocial/internal/rag"
+	"devsocial/internal/search"
 	"devsocial/internal/storage"
 	"devsocial/internal/ws"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -23,6 +24,8 @@ type App struct {
 	Tools              *ai.ToolRegistry
 	Sandbox            *ai.SandboxClient
 	WebSearch          *ai.WebSearchClient
+	SemanticSearcher   *search.SemanticSearcher
+	Embedder           *search.Embedder
 	Storage            *storage.MinIO
 	RAG                *rag.Client
 }
@@ -90,6 +93,20 @@ func New(db *sql.DB, githubClientID, githubClientSecret, baseURL string) *App {
 		log.Printf("ChromaDB connected")
 	}
 
+	// Semantic search (pgvector)
+	var semanticSearcher *search.SemanticSearcher
+	var embedder *search.Embedder
+	// Check if pgvector is available by checking for embedding columns
+	var hasEmbeddings bool
+	err = db.QueryRow(`SELECT EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'messages' AND column_name = 'embedding')`).Scan(&hasEmbeddings)
+	if err == nil && hasEmbeddings {
+		semanticSearcher = search.NewSemanticSearcher(db, aiProvider)
+		embedder = search.NewEmbedder(db, aiProvider)
+		log.Printf("pgvector semantic search enabled")
+	} else {
+		log.Printf("pgvector not available - semantic search disabled (run migrations to enable)")
+	}
+
 	app := &App{
 		DB:                 db,
 		GitHubClientID:     githubClientID,
@@ -101,6 +118,8 @@ func New(db *sql.DB, githubClientID, githubClientSecret, baseURL string) *App {
 		Tools:              tools,
 		Sandbox:            sandbox,
 		WebSearch:          webSearch,
+		SemanticSearcher:   semanticSearcher,
+		Embedder:           embedder,
 		Storage:            store,
 		RAG:                ragClient,
 	}
@@ -194,6 +213,7 @@ func (app *App) Handler() http.Handler {
 
 	// Search
 	mux.HandleFunc("GET /api/search", app.requireAuth(app.handleSearch))
+	mux.HandleFunc("POST /api/admin/reindex-embeddings", app.requireAuth(app.handleReindexEmbeddings))
 
 	return app.withSecurityHeaders(app.withUser(app.withRateLimit(mux)))
 }
