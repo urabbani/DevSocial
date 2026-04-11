@@ -129,11 +129,14 @@ export const api = {
     request<void>(`/tasks/${id}`, { method: 'DELETE' }),
 
   // Search
-  search: (query: string, workspaceId: number, limit?: number) => {
+  search: (query: string, workspaceId: number, limit?: number, mode?: 'keyword' | 'semantic' | 'hybrid') => {
     const params = new URLSearchParams({ q: query, workspace_id: String(workspaceId) });
     if (limit) params.set('limit', String(limit));
+    if (mode) params.set('mode', mode);
     return request<SearchResult[]>(`/search?${params}`);
   },
+  // Re-index embeddings (admin only)
+  reindexEmbeddings: () => request<{ status: string }>('/admin/reindex-embeddings', { method: 'POST' }),
 };
 
 // Types
@@ -319,4 +322,5 @@ export interface SearchResult {
   preview: string;
   author?: string;
   date: string;
+  score?: number; // Relevance score for semantic search (0-1)
 }

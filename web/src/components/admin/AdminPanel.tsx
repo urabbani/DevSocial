@@ -7,6 +7,7 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
   const [health, setHealth] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [reindexing, setReindexing] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
@@ -42,6 +43,19 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
       setError(e instanceof Error ? e.message : 'Failed to save');
     }
     setSaving(false);
+  }
+
+  async function reindexEmbeddings() {
+    setReindexing(true);
+    setError('');
+    setSuccess('');
+    try {
+      const result = await api.reindexEmbeddings();
+      setSuccess('Re-indexing started. This may take several minutes.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to start re-indexing');
+    }
+    setReindexing(false);
   }
 
   if (loading) {
@@ -143,6 +157,40 @@ export function AdminPanel({ onClose }: { onClose: () => void }) {
                 onChange={(e) => setSettings({ ...settings, ai_max_context_messages: e.target.value })}
                 className="w-full px-3 py-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded text-sm text-[var(--text-primary)]"
               />
+            </div>
+          </div>
+        </section>
+
+        {/* Search & Embeddings */}
+        <section>
+          <h3 className="text-sm font-bold text-[var(--text-muted)] uppercase tracking-wider mb-3">
+            Search & Embeddings
+          </h3>
+          <div className="space-y-4 bg-[var(--bg-secondary)] rounded p-4">
+            <div>
+              <label className="block text-sm text-[var(--text-secondary)] mb-1">Search Mode</label>
+              <select
+                value={settings.ai_search_mode || 'keyword'}
+                onChange={(e) => setSettings({ ...settings, ai_search_mode: e.target.value })}
+                className="w-full px-3 py-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded text-sm text-[var(--text-primary)]"
+              >
+                <option value="keyword">Keyword (exact match)</option>
+                <option value="semantic">Semantic (meaning-based)</option>
+                <option value="hybrid">Hybrid (keyword + semantic)</option>
+              </select>
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium text-[var(--text-primary)]">Re-index Embeddings</div>
+                <div className="text-xs text-[var(--text-muted)]">Generate embeddings for semantic search</div>
+              </div>
+              <button
+                onClick={reindexEmbeddings}
+                disabled={reindexing}
+                className="px-4 py-2 bg-[var(--bg-tertiary)] text-white rounded hover:bg-[var(--accent)] disabled:opacity-50 text-sm"
+              >
+                {reindexing ? 'Starting...' : 'Re-index'}
+              </button>
             </div>
           </div>
         </section>

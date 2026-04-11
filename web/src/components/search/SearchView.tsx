@@ -16,25 +16,34 @@ const TYPE_COLORS: Record<string, string> = {
   file: 'text-purple-400',
 };
 
+type SearchMode = 'keyword' | 'semantic' | 'hybrid';
+
+const MODE_LABELS: Record<SearchMode, string> = {
+  keyword: 'Keyword',
+  semantic: 'Semantic',
+  hybrid: 'Hybrid',
+};
+
 export function SearchView() {
   const workspace = useWorkspaceStore((s) => s.activeWorkspace);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedType, setSelectedType] = useState<string>('');
+  const [searchMode, setSearchMode] = useState<SearchMode>('keyword');
 
   const doSearch = useCallback(async (q: string) => {
     if (!q.trim() || !workspace) return;
     setLoading(true);
     try {
-      const r = await api.search(q, workspace.id);
+      const r = await api.search(q, workspace.id, 20, searchMode);
       setResults(r);
     } catch {
       setResults([]);
     } finally {
       setLoading(false);
     }
-  }, [workspace]);
+  }, [workspace, searchMode]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -58,10 +67,13 @@ export function SearchView() {
     return acc;
   }, {} as Record<string, number>);
 
+  const hasSemanticScores = results.some(r => r.score !== undefined);
+
   return (
     <div className="flex flex-col h-full">
       <div className="p-4 border-b border-[var(--border)]">
-        <div className="relative">
+        {/* Search input */}
+        <div className="relative mb-2">
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -74,9 +86,32 @@ export function SearchView() {
           </span>
         </div>
 
+        {/* Search mode toggle */}
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-xs text-[var(--text-muted)]">Mode:</span>
+          {(Object.keys(MODE_LABELS) as SearchMode[]).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => setSearchMode(mode)}
+              className={`text-xs px-2 py-1 rounded transition-colors ${
+                searchMode === mode
+                  ? 'bg-[var(--accent)] text-white'
+                  : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+            >
+              {MODE_LABELS[mode]}
+            </button>
+          ))}
+          {hasSemanticScores && (
+            <span className="text-xs text-[var(--text-muted)] ml-auto">
+              Results sorted by relevance
+            </span>
+          )}
+        </div>
+
         {/* Type filters */}
         {results.length > 0 && (
-          <div className="flex items-center gap-3 mt-2">
+          <div className="flex items-center gap-3">
             {Object.entries(typeCounts).map(([type, count]) => (
               <button
                 key={type}
@@ -95,6 +130,9 @@ export function SearchView() {
         {!loading && query.trim().length >= 2 && results.length === 0 && (
           <div className="text-center text-[var(--text-secondary)] py-8">
             <p>No results found for "{query}"</p>
+            {searchMode !== 'keyword' && (
+              <p className="text-xs mt-1">Try switching to Keyword mode for exact matches</p>
+            )}
           </div>
         )}
         <div className="space-y-2">
@@ -111,6 +149,11 @@ export function SearchView() {
                 <span className="text-[10px] text-[var(--text-muted)] ml-auto">
                   {new Date(result.date).toLocaleDateString()}
                 </span>
+                {result.score !== undefined && (
+                  <span className="text-xs font-medium text-[var(--accent)] ml-2">
+                    {Math.round(result.score * 100)}% match
+                  </span>
+                )}
               </div>
               <p className="text-sm text-[var(--text-primary)]">{result.title}</p>
               {result.preview !== result.title && (
