@@ -14,7 +14,7 @@ import (
 const (
 	pongWait   = 60 * time.Second
 	pingPeriod = (pongWait * 9) / 10
-	maxMsgSize = 4096
+	maxMsgSize = 65536 // Increased for document content
 )
 
 // WebSocket message types
@@ -26,6 +26,17 @@ type WSMessage struct {
 	Status     string  `json:"status,omitempty"`
 	Message    any     `json:"message,omitempty"`
 	ChannelIDs []int64 `json:"channel_ids,omitempty"`
+	// Document fields
+	DocumentID int64  `json:"document_id,omitempty"`
+	Filename   string `json:"filename,omitempty"`
+	Language   string `json:"language,omitempty"`
+	Cursor     *WSCursor `json:"cursor,omitempty"`
+}
+
+// WSCursor represents cursor position in a document
+type WSCursor struct {
+	Line int `json:"line"`
+	Col  int `json:"col"`
 }
 
 var upgrader = websocket.Upgrader{
@@ -63,30 +74,33 @@ var upgrader = websocket.Upgrader{
 
 // Client represents a single WebSocket connection.
 type Client struct {
-	hub         *Hub
-	conn        *websocket.Conn
-	send        chan []byte
-	userID      int64
-	channels    map[int64]bool // subscribed channels
-	workspaces  map[int64]bool // subscribed workspaces
-	mu          sync.RWMutex   // protects channels and workspaces
+	hub        *Hub
+	conn       *websocket.Conn
+	send       chan []byte
+	userID     int64
+	channels   map[int64]bool // subscribed channels
+	workspaces map[int64]bool // subscribed workspaces
+	documents  map[int64]bool // subscribed documents (for collaborative editing)
+	mu         sync.RWMutex   // protects channels, workspaces, and documents
 }
 
 // Hub maintains the set of active clients and broadcasts messages.
 type Hub struct {
-	clients    map[*Client]bool
-	broadcast  chan []byte
-	register   chan *Client
-	unregister chan *Client
-	mu         sync.RWMutex
+	clients         map[*Client]bool
+	broadcast       chan []byte
+	register        chan *Client
+	unregister      chan *Client
+	documentClients map[int64]map[*Client]bool // document rooms
+	mu              sync.RWMutex
 }
 
 func NewHub() *Hub {
 	return &Hub{
-		clients:    make(map[*Client]bool),
-		broadcast:  make(chan []byte, 256),
-		register:   make(chan *Client, 16),
-		unregister: make(chan *Client, 16),
+		clients:         make(map[*Client]bool),
+		broadcast:       make(chan []byte, 256),
+		register:        make(chan *Client, 16),
+		unregister:      make(chan *Client, 16),
+		documentClients: make(map[int64]map[*Client]bool),
 	}
 }
 
@@ -103,6 +117,17 @@ func (h *Hub) Run() {
 			if _, ok := h.clients[client]; ok {
 				delete(h.clients, client)
 				close(client.send)
+				// Remove from all document rooms
+				client.mu.RLock()
+				for docID := range client.documents {
+					if room, ok := h.documentClients[docID]; ok {
+						delete(room, client)
+						if len(room) == 0 {
+							delete(h.documentClients, docID)
+						}
+					}
+				}
+				client.mu.RUnlock()
 			}
 			h.mu.Unlock()
 
@@ -183,6 +208,51 @@ func (h *Hub) SendToUser(userID int64, message []byte) {
 	}
 }
 
+// BroadcastDocumentEdit broadcasts a document edit event to all clients viewing the document.
+func (h *Hub) BroadcastDocumentEdit(documentID, userID int64, username string) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	clients, ok := h.documentClients[documentID]
+	if !ok {
+		return
+	}
+
+	msg, _ := json.Marshal(WSMessage{
+		Type:       "doc_edit",
+		DocumentID: documentID,
+		UserID:     userID,
+		Content:    username, // Using content field to pass username
+	})
+
+	for client := range clients {
+		if client.userID != userID { // Don't send to the editor
+			select {
+			case client.send <- msg:
+			default:
+			}
+		}
+	}
+}
+
+// BroadcastToDocument sends a message to all clients viewing a specific document.
+func (h *Hub) BroadcastToDocument(documentID int64, message []byte) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	clients, ok := h.documentClients[documentID]
+	if !ok {
+		return
+	}
+
+	for client := range clients {
+		select {
+		case client.send <- message:
+		default:
+		}
+	}
+}
+
 // ServeWS upgrades an HTTP connection to WebSocket and registers the client.
 func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, userID int64) {
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -198,6 +268,7 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, userID int64) {
 		userID:     userID,
 		channels:   make(map[int64]bool),
 		workspaces: make(map[int64]bool),
+		documents:  make(map[int64]bool),
 	}
 
 	h.register <- client
@@ -239,6 +310,67 @@ func (c *Client) readPump() {
 			c.mu.Unlock()
 
 		case "subscribe_workspace":
+
+			case "doc_open":
+				// Subscribe to document room
+				if wsMsg.DocumentID > 0 {
+					c.mu.Lock()
+					c.documents[wsMsg.DocumentID] = true
+					c.mu.Unlock()
+
+					c.hub.mu.Lock()
+					if c.hub.documentClients[wsMsg.DocumentID] == nil {
+						c.hub.documentClients[wsMsg.DocumentID] = make(map[*Client]bool)
+					}
+					c.hub.documentClients[wsMsg.DocumentID][c] = true
+					c.hub.mu.Unlock()
+
+					// Broadcast to other viewers
+					openMsg, _ := json.Marshal(WSMessage{
+						Type:       "doc_open",
+						DocumentID: wsMsg.DocumentID,
+						UserID:     c.userID,
+						Content:    wsMsg.Content, // username
+					})
+					c.hub.BroadcastToDocument(wsMsg.DocumentID, openMsg)
+				}
+
+			case "doc_close":
+				// Unsubscribe from document room
+				if wsMsg.DocumentID > 0 {
+					c.mu.Lock()
+					delete(c.documents, wsMsg.DocumentID)
+					c.mu.Unlock()
+
+					c.hub.mu.Lock()
+					if room, ok := c.hub.documentClients[wsMsg.DocumentID]; ok {
+						delete(room, c)
+						if len(room) == 0 {
+							delete(c.hub.documentClients, wsMsg.DocumentID)
+						}
+					}
+					c.hub.mu.Unlock()
+
+					// Broadcast to other viewers
+					closeMsg, _ := json.Marshal(WSMessage{
+						Type:       "doc_close",
+						DocumentID: wsMsg.DocumentID,
+						UserID:     c.userID,
+					})
+					c.hub.BroadcastToDocument(wsMsg.DocumentID, closeMsg)
+				}
+
+			case "doc_cursor":
+				// Broadcast cursor position to other document viewers
+				if wsMsg.DocumentID > 0 && wsMsg.Cursor != nil {
+					cursorMsg, _ := json.Marshal(WSMessage{
+						Type:       "doc_cursor",
+						DocumentID: wsMsg.DocumentID,
+						UserID:     c.userID,
+						Cursor:     wsMsg.Cursor,
+					})
+					c.hub.BroadcastToDocument(wsMsg.DocumentID, cursorMsg)
+				}
 			c.mu.Lock()
 			if wsMsg.ChannelIDs != nil {
 				for _, wsID := range wsMsg.ChannelIDs {

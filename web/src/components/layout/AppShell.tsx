@@ -10,13 +10,15 @@ import { FeedView } from '../feed/FeedView';
 import { TaskBoard } from '../tasks/TaskBoard';
 import { SearchView } from '../search/SearchView';
 import { NotificationBell } from "../notifications/NotificationBell";
+import { CodeEditorView } from '../code/CodeEditorView';
 import { useWebSocket } from '../../hooks/useWebSocket';
 
-type View = 'chat' | 'feed' | 'files' | 'tasks' | 'search' | 'admin';
+type View = 'chat' | 'feed' | 'files' | 'tasks' | 'search' | 'admin' | 'code';
 
 const TABS: { key: View; label: string }[] = [
   { key: 'chat', label: 'Chat' },
   { key: 'feed', label: 'Feed' },
+  { key: 'code', label: 'Code' },
   { key: 'tasks', label: 'Tasks' },
   { key: 'files', label: 'Files' },
   { key: 'search', label: 'Search' },
@@ -79,12 +81,10 @@ export function AppShell() {
           <NotificationBell />
           <span className="text-xs text-[var(--text-muted)]">{activeWorkspace?.name}</span>
         </div>
-          <div className="flex-1" />
-          <span className="text-xs text-[var(--text-muted)]">{activeWorkspace?.name}</span>
-        </div>
 
         {view === 'chat' && <MessageView />}
         {view === 'feed' && <FeedView />}
+        {view === 'code' && <CodeEditorView />}
         {view === 'tasks' && <TaskBoard />}
         {view === 'files' && <FileBrowser />}
         {view === 'search' && <SearchView />}

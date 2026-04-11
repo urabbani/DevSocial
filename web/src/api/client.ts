@@ -143,6 +143,18 @@ export const api = {
   getUnreadCount: () => request<{ count: number }>('/notifications/unread-count'),
   markNotificationRead: (id: number) => request<{ status: string }>(`/notifications/${id}/read`, { method: 'PATCH' }),
   markAllNotificationsRead: () => request<{ status: string }>('/notifications/read-all', { method: 'POST' }),
+
+  // Code Documents
+  listDocuments: (workspaceId: number) => request<CodeDocument[]>(`/workspaces/${workspaceId}/documents`),
+  createDocument: (workspaceId: number, data: CreateDocumentInput) =>
+    request<CodeDocument>(`/workspaces/${workspaceId}/documents`, { method: 'POST', body: JSON.stringify(data) }),
+  getDocument: (id: number) => request<CodeDocument>(`/documents/${id}`),
+  updateDocument: (id: number, data: UpdateDocumentInput) =>
+    request<CodeDocument>(`/documents/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteDocument: (id: number) =>
+    request<void>(`/documents/${id}`, { method: 'DELETE' }),
+  executeDocument: (id: number) =>
+    request<CodeExecutionResult>(`/documents/${id}/execute`, { method: 'POST' }),
 };
 
 // Types
@@ -348,4 +360,41 @@ export interface Notification {
   read: boolean;
   data?: Record<string, any>;
   created_at: string;
+}
+
+export interface CodeDocument {
+  id: number;
+  workspace_id: number;
+  title: string;
+  filename: string;
+  language: string;
+  content: string;
+  version: number;
+  created_by: number;
+  created_at: string;
+  last_edited_by?: number;
+  updated_at: string;
+  created_by_name?: string;
+  last_edited_by_name?: string;
+}
+
+export interface CreateDocumentInput {
+  title: string;
+  filename: string;
+  language?: string;
+  content?: string;
+}
+
+export interface UpdateDocumentInput {
+  title?: string;
+  content?: string;
+  language?: string;
+  version: number;
+}
+
+export interface CodeExecutionResult {
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+  duration?: string;
 }

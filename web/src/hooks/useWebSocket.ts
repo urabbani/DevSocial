@@ -3,8 +3,14 @@ import { useWorkspaceStore } from '../stores/workspace';
 import { useMessageStore } from '../stores/messages';
 import { useAuthStore } from '../stores/auth';
 import { useNotificationStore } from '../stores/notifications';
+import { useDocumentStore } from '../stores/documents';
 import type { ToolCall } from '../api/client';
 import type { Notification } from '../api/client';
+
+export interface WSCursor {
+  line: number;
+  col: number;
+}
 
 export interface WSMessage {
   type: string;
@@ -18,6 +24,11 @@ export interface WSMessage {
   message_id?: number;
   tool_call?: ToolCall;
   notification?: Notification;
+  // Document fields
+  document_id?: number;
+  filename?: string;
+  language?: string;
+  cursor?: WSCursor;
 }
 
 const MAX_RECONNECT_ATTEMPTS = 20;
@@ -53,6 +64,7 @@ export function useWebSocket() {
         const msg: WSMessage = JSON.parse(event.data);
         const msgStore = useMessageStore.getState();
         const notifStore = useNotificationStore.getState();
+        const docStore = useDocumentStore.getState();
 
         switch (msg.type) {
           case 'message':
@@ -83,6 +95,12 @@ export function useWebSocket() {
             if (msg.notification && notifStore) {
               notifStore.handleWSNotification(msg.notification);
             }
+            break;
+          case 'doc_open':
+          case 'doc_close':
+          case 'doc_edit':
+          case 'doc_cursor':
+            docStore.handleWSDocEvent(msg);
             break;
         }
       } catch {
@@ -126,4 +144,19 @@ export function useWebSocket() {
       subscribedChannels.current.clear();
     };
   }, [connect]);
+
+  // Function to send messages through the WebSocket
+  const sendWSMessage = useCallback((msg: Partial<WSMessage>) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(msg));
+    }
+  }, []);
+
+  // Expose sendWSMessage globally for components that need it
+  useEffect(() => {
+    (window as any).sendWSMessage = sendWSMessage;
+    return () => {
+      delete (window as any).sendWSMessage;
+    };
+  }, [sendWSMessage]);
 }

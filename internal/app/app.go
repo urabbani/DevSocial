@@ -211,6 +211,14 @@ func (app *App) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/tasks/{id}", app.requireAuth(app.handleUpdateTask))
 	mux.HandleFunc("DELETE /api/tasks/{id}", app.requireAuth(app.handleDeleteTask))
 
+	// Code Documents
+	mux.HandleFunc("GET /api/workspaces/{id}/documents", app.requireAuth(app.handleListDocuments))
+	mux.HandleFunc("POST /api/workspaces/{id}/documents", app.requireAuth(app.handleCreateDocument))
+	mux.HandleFunc("GET /api/documents/{id}", app.requireAuth(app.handleGetDocument))
+	mux.HandleFunc("PATCH /api/documents/{id}", app.requireAuth(app.handleUpdateDocument))
+	mux.HandleFunc("DELETE /api/documents/{id}", app.requireAuth(app.handleDeleteDocument))
+	mux.HandleFunc("POST /api/documents/{id}/execute", app.requireAuth(app.handleExecuteDocument))
+
 	// Search
 	mux.HandleFunc("GET /api/search", app.requireAuth(app.handleSearch))
 	mux.HandleFunc("POST /api/admin/reindex-embeddings", app.requireAuth(app.handleReindexEmbeddings))
