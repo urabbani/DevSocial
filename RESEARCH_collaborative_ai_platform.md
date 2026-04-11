@@ -399,16 +399,23 @@ general_settings:
 - **Leverage:** ChromaDB, MinIO, LiteLLM for embeddings
 - **Deliverable:** Working social feed, file uploads with RAG indexing, task board, search
 
-### Phase 3: Multi-LLM and Agent Core (Weeks 7-9)
-**Focus:** AI as a conversation participant
-- LiteLLM Proxy deployment and configuration
-- Python FastAPI AI worker service
-- Agent personas that appear as users in channels
-- Per-thread model selection UI
-- Basic tool-calling (web search, calculator, file read)
-- Streaming AI responses in chat
-- **Leverage:** LiteLLM, LangChain, Open WebUI Pipeline patterns
-- **Deliverable:** AI agents participate in conversations with context
+### Phase 3: Multi-LLM and Agent Core (Weeks 7-9) -- COMPLETE
+**Focus:** AI as a conversation participant with tool calling
+- [x] LiteLLM Proxy deployment and configuration
+- [x] Backend tool calling foundation (internal/ai/provider.go with tool types)
+- [x] Tool interface and registry (internal/ai/tools.go)
+- [x] Built-in tools: CodeExecuteTool (Docker sandbox), WebSearchTool (DuckDuckGo), FileReadTool
+- [x] Tool loop in processAIClaim (stream text → detect tool_calls → execute → repeat, max 10 iterations)
+- [x] WebSocket protocol: tool_call, tool_result, ai_stream_done message types
+- [x] Frontend: activeToolCalls store, clearAIStream, upsertToolCall
+- [x] Frontend: MarkdownRenderer with react-markdown, remark-gfm, rehype-highlight
+- [x] Frontend: ToolCallBlock (collapsible tool call display with status icons)
+- [x] Frontend: ChartBlock with ECharts for data visualization (```chart blocks)
+- [x] System prompt updated with tool documentation and chart convention
+- [x] Settings: ai_tool_auto_execute, ai_max_tool_iterations, ai_code_execution_enabled, ai_web_search_enabled
+- [x] Streaming AI responses in chat
+- **Leverage:** LiteLLM, Docker socket, DuckDuckGo HTML API, ECharts, react-markdown
+- **Deliverable:** AI agents participate in conversations with tool use, code execution, web search, and data visualization
 
 ### Phase 4: Collaborative Code and Git (Weeks 10-12)
 **Focus:** Live collaborative coding with version control
